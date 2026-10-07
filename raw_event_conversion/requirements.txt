@@ -1,0 +1,5 @@
+awkward>=2
+numpy
+pyarrow
+fsspec
+torch

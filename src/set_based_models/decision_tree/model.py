@@ -9,10 +9,11 @@ from numbers import Integral
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ..core.data import ObservableKind, ObservableSpec, SetInput
+from ..core.candidates import event_candidate_cuts, observable_cuts
+from ..core.data import ObservableSpec, SetInput, _validate_event_observables
 from ..core.metrics import BinaryPerformance
 from ..core.predicates import (
-    CategoryCut, Comparison, CountAggregation, SlotCut, ThresholdCut,
+    CountAggregation, Cut, EventCut, SlotCut,
 )
 from .nodes import Branch, Node, NodeStatistics, PathStep
 from .training import (
@@ -28,7 +29,11 @@ class ChainEvaluation:
 
 
 class ExistentialDecisionTree:
-    """A shallow binary tree whose positive branches refine slot masks.
+    """A binary tree with slot-count predicates and optional event predicates.
+
+    Positive slot branches refine active objects; event branches preserve
+    their objects. ``event_observables`` defines a separate feature schema
+    whose aligned 2D arrays are supplied at fitting and prediction time.
 
     A caller-supplied gain function scores each mask-aware event partition. Its
     input is :class:`SplitStatistics`, and larger returned values are better.
@@ -38,6 +43,7 @@ class ExistentialDecisionTree:
         self,
         observables: Sequence[ObservableSpec],
         *,
+        event_observables: Sequence[ObservableSpec] = (),
         max_depth: int = 6,
         criterion: str | Callable[..., float] = "gini",
         splitting_method: str = "greedy",
@@ -50,6 +56,7 @@ class ExistentialDecisionTree:
         max_thresholds: int | None = 64,
     ) -> None:
         self.observables = tuple(observables)
+        self.event_observables = _validate_event_observables(event_observables)
         if not self.observables or not all(
             isinstance(spec, ObservableSpec) for spec in self.observables
         ):
@@ -96,11 +103,20 @@ class ExistentialDecisionTree:
         signal_weight: ArrayLike | None = None,
         background_weight: ArrayLike | None = None,
         gain_function: Callable[[SplitStatistics], float] | None = None,
+        signal_event_features: ArrayLike | None = None,
+        background_event_features: ArrayLike | None = None,
     ) -> "ExistentialDecisionTree":
-        """Greedily grow a mask-aware tree from separate class tensors."""
+        """Grow a tree from class tensors and optional aligned event matrices.
 
-        signal_data = self._data(signal, signal_slot_mask, signal_weight)
-        background_data = self._data(background, background_slot_mask, background_weight)
+        ``signal_event_features`` and ``background_event_features`` have
+        shape ``(class_sample_count, len(event_observables))``. Both cut
+        scopes compete under the same supplied gain function at each node.
+        """
+
+        signal_data = self._data(signal, signal_slot_mask, signal_weight, signal_event_features)
+        background_data = self._data(
+            background, background_slot_mask, background_weight, background_event_features
+        )
         if signal_data.X.shape[1:] != background_data.X.shape[1:]:
             raise ValueError("Signal and background must have identical slot/feature shape")
         scorer = gain_function or self.gain_function
@@ -154,7 +170,7 @@ class ExistentialDecisionTree:
         reverse: list[PathStep] = []
         while current.parent_id is not None:
             parent = self.get_node(current.parent_id)
-            assert parent.cut is not None and parent.aggregation is not None
+            assert parent.cut is not None
             assert current.branch_from_parent is not None
             reverse.append(
                 PathStep(parent.node_id, parent.cut, parent.aggregation, current.branch_from_parent)
@@ -165,7 +181,8 @@ class ExistentialDecisionTree:
     def slot_cut_chain(self, node_id: int) -> tuple[SlotCut, ...]:
         """Return the positive-branch slot-cut conjunction leading to a node."""
 
-        return tuple(step.cut for step in self.cut_chain(node_id) if step.branch is Branch.POSITIVE)
+        return tuple(step.cut for step in self.cut_chain(node_id)
+                     if step.branch is Branch.POSITIVE and not isinstance(step.cut, EventCut))
 
     def cut_chain_text(self, node_id: int) -> str:
         steps = self.cut_chain(node_id)
@@ -174,23 +191,28 @@ class ExistentialDecisionTree:
         lines = []
         for step in steps:
             outcome = "PASS" if step.branch is Branch.POSITIVE else "FAIL"
+            if isinstance(step.cut, EventCut):
+                condition = step.cut.to_text(self.event_observables)
+            else:
+                assert step.aggregation is not None
+                condition = f"{step.aggregation.to_text()}: {step.cut.to_text(self.observables)}"
             lines.append(
                 f"node {step.source_node_id}: {outcome} "
-                f"[{step.aggregation.to_text()}: {step.cut.to_text(self.observables)}]"
+                f"[{condition}]"
             )
         return "\n".join(lines)
 
     def evaluate_chain(
-        self, node_id: int, X: ArrayLike, *, slot_mask: ArrayLike | None = None
+        self, node_id: int, X: ArrayLike, *, slot_mask: ArrayLike | None = None,
+        event_features: ArrayLike | None = None,
     ) -> ChainEvaluation:
         """Evaluate a node's exact root-to-node chain on every sample."""
 
-        data = self._data(X, slot_mask)
+        data = self._data(X, slot_mask, event_features=event_features)
         selected = np.ones(data.n_samples, dtype=np.bool_)
         active = data.slot_mask.copy()
         for step in self.cut_chain(node_id):
-            candidates = active & step.cut.evaluate(data)
-            passed = step.aggregation.evaluate(candidates)
+            passed, candidates = self._route(step.cut, step.aggregation, data, active)
             selected &= passed if step.branch is Branch.POSITIVE else ~passed
             if step.branch is Branch.POSITIVE:
                 active = np.where(selected[:, None], candidates, active)
@@ -199,12 +221,12 @@ class ExistentialDecisionTree:
     def slot_cut_function(
         self, node_id: int
     ) -> Callable[[ArrayLike, ArrayLike | None], NDArray[np.bool_]]:
-        """Compile the positive slot cuts without event-level aggregation."""
+        """Compile only positive slot cuts, omitting event cuts and routing."""
 
         cuts = self.slot_cut_chain(node_id)
 
         def evaluate(X: ArrayLike, slot_mask: ArrayLike | None = None) -> NDArray[np.bool_]:
-            data = self._data(X, slot_mask)
+            data = SetInput.from_arrays(X, self.observables, slot_mask=slot_mask)
             result = data.slot_mask.copy()
             for cut in cuts:
                 result &= cut.evaluate(data)
@@ -212,11 +234,12 @@ class ExistentialDecisionTree:
 
         return evaluate
 
-    def apply(self, X: ArrayLike, *, slot_mask: ArrayLike | None = None) -> NDArray[np.int64]:
+    def apply(self, X: ArrayLike, *, slot_mask: ArrayLike | None = None,
+              event_features: ArrayLike | None = None) -> NDArray[np.int64]:
         """Return the terminal node ID reached by every sample."""
 
         self._require_fitted()
-        data = self._data(X, slot_mask)
+        data = self._data(X, slot_mask, event_features=event_features)
         active = data.slot_mask.copy()
         current = np.full(data.n_samples, self.root_id_, dtype=np.int64)
         unfinished = np.ones(data.n_samples, dtype=np.bool_)
@@ -227,10 +250,9 @@ class ExistentialDecisionTree:
                 if node.is_leaf:
                     unfinished[rows] = False
                     continue
-                assert node.cut is not None and node.aggregation is not None
+                assert node.cut is not None
                 subset = self._slice_data(data, rows)
-                candidates = active[rows] & node.cut.evaluate(subset)
-                passed = node.aggregation.evaluate(candidates)
+                passed, candidates = self._route(node.cut, node.aggregation, subset, active[rows])
                 positive_rows, negative_rows = rows[passed], rows[~passed]
                 active[positive_rows] = candidates[passed]
                 assert node.positive_child_id is not None and node.negative_child_id is not None
@@ -239,9 +261,10 @@ class ExistentialDecisionTree:
         return current
 
     def decision_function(
-        self, X: ArrayLike, *, slot_mask: ArrayLike | None = None
+        self, X: ArrayLike, *, slot_mask: ArrayLike | None = None,
+        event_features: ArrayLike | None = None,
     ) -> NDArray[np.float64]:
-        leaves = self.apply(X, slot_mask=slot_mask)
+        leaves = self.apply(X, slot_mask=slot_mask, event_features=event_features)
         scores = np.empty(leaves.size, dtype=np.float64)
         for node_id in np.unique(leaves):
             node = self.get_node(int(node_id))
@@ -253,8 +276,9 @@ class ExistentialDecisionTree:
             scores[leaves == node_id] = score
         return scores
 
-    def predict(self, X: ArrayLike, *, slot_mask: ArrayLike | None = None) -> NDArray[np.int64]:
-        leaves = self.apply(X, slot_mask=slot_mask)
+    def predict(self, X: ArrayLike, *, slot_mask: ArrayLike | None = None,
+                event_features: ArrayLike | None = None) -> NDArray[np.int64]:
+        leaves = self.apply(X, slot_mask=slot_mask, event_features=event_features)
         result = np.empty(leaves.size, dtype=np.int64)
         for node_id in np.unique(leaves):
             node = self.get_node(int(node_id))
@@ -279,10 +303,14 @@ class ExistentialDecisionTree:
         background_slot_mask: ArrayLike | None = None,
         signal_weight: ArrayLike | None = None,
         background_weight: ArrayLike | None = None,
+        signal_event_features: ArrayLike | None = None,
+        background_event_features: ArrayLike | None = None,
     ) -> BinaryPerformance:
         return BinaryPerformance.from_selections(
-            self.predict(signal, slot_mask=signal_slot_mask).astype(bool),
-            self.predict(background, slot_mask=background_slot_mask).astype(bool),
+            self.predict(signal, slot_mask=signal_slot_mask,
+                         event_features=signal_event_features).astype(bool),
+            self.predict(background, slot_mask=background_slot_mask,
+                         event_features=background_event_features).astype(bool),
             signal_weight=signal_weight,
             background_weight=background_weight,
         )
@@ -297,13 +325,17 @@ class ExistentialDecisionTree:
         background_slot_mask: ArrayLike | None = None,
         signal_weight: ArrayLike | None = None,
         background_weight: ArrayLike | None = None,
+        signal_event_features: ArrayLike | None = None,
+        background_event_features: ArrayLike | None = None,
     ) -> BinaryPerformance:
         """Treat reaching ``node_id`` as acceptance and evaluate its chain."""
 
         return BinaryPerformance.from_selections(
-            self.evaluate_chain(node_id, signal, slot_mask=signal_slot_mask).selected_samples,
+            self.evaluate_chain(node_id, signal, slot_mask=signal_slot_mask,
+                                event_features=signal_event_features).selected_samples,
             self.evaluate_chain(
-                node_id, background, slot_mask=background_slot_mask
+                node_id, background, slot_mask=background_slot_mask,
+                event_features=background_event_features,
             ).selected_samples,
             signal_weight=signal_weight,
             background_weight=background_weight,
@@ -314,9 +346,11 @@ class ExistentialDecisionTree:
         X: ArrayLike,
         slot_mask: ArrayLike | None = None,
         sample_weight: ArrayLike | None = None,
+        event_features: ArrayLike | None = None,
     ) -> SetInput:
         return SetInput.from_arrays(
-            X, self.observables, slot_mask=slot_mask, sample_weight=sample_weight
+            X, self.observables, slot_mask=slot_mask, sample_weight=sample_weight,
+            event_features=event_features, event_observables=self.event_observables,
         )
 
     def _grow_node(self, node_id, state, signal_data, background_data,
@@ -345,7 +379,8 @@ class ExistentialDecisionTree:
         if best_cut is None or best_split is None or best_gain <= self.min_gain:
             self._make_leaf(node)
             return
-        node.cut, node.aggregation = best_cut, self.aggregation
+        node.cut = best_cut
+        node.aggregation = None if isinstance(best_cut, EventCut) else self.aggregation
         node.statistics = self._node_statistics(parent_stats, best_gain)
         positive_id, negative_id = len(self.nodes_), len(self.nodes_) + 1
         node.positive_child_id, node.negative_child_id = positive_id, negative_id
@@ -359,36 +394,22 @@ class ExistentialDecisionTree:
         self._grow_node(negative_id, negative_state, signal_data, background_data,
                         signal_weights, background_weights, scorer)
 
-    def _candidate_cuts(self, state, signal_data, background_data) -> tuple[SlotCut, ...]:
-        candidates: list[SlotCut] = []
+    def _candidate_cuts(self, state, signal_data, background_data) -> tuple[Cut, ...]:
+        candidates: list[Cut] = []
         for index, spec in enumerate(self.observables):
-            if spec.kind in (ObservableKind.CONTINUOUS, ObservableKind.ORDINAL):
-                arrays = []
-                for class_state, data in ((state.signal, signal_data),
-                                          (state.background, background_data)):
-                    rows = class_state.sample_indices
-                    if rows.size:
-                        valid = class_state.active_slot_mask & data.value_mask[rows, :, index]
-                        arrays.append(data.X[rows, :, index][valid])
-                if not arrays:
-                    continue
-                unique = np.unique(np.concatenate(arrays))
-                if unique.size < 2:
-                    continue
-                thresholds = unique[:-1] + np.diff(unique) / 2.0
-                if self.max_thresholds is not None and thresholds.size > self.max_thresholds:
-                    positions = np.linspace(0, thresholds.size - 1,
-                                            self.max_thresholds, dtype=np.int64)
-                    thresholds = thresholds[np.unique(positions)]
-                for threshold in thresholds:
-                    candidates.extend([
-                        ThresholdCut(index, Comparison.GREATER, float(threshold)),
-                        ThresholdCut(index, Comparison.LESS_EQUAL, float(threshold)),
-                    ])
-            else:
-                allowed = spec.allowed_codes
-                assert allowed is not None
-                candidates.extend(CategoryCut(index, {code}) for code in sorted(allowed))
+            arrays = []
+            for class_state, data in ((state.signal, signal_data),
+                                      (state.background, background_data)):
+                rows = class_state.sample_indices
+                valid = class_state.active_slot_mask & data.value_mask[rows, :, index]
+                arrays.append(data.X[rows, :, index][valid])
+            candidates.extend(observable_cuts(
+                index, spec, np.concatenate(arrays), self.max_thresholds
+            ))
+        candidates.extend(event_candidate_cuts(
+            signal_data, background_data,
+            state.signal.sample_indices, state.background.sample_indices, self.max_thresholds,
+        ))
         return tuple(candidates)
 
     def _apply_candidate(self, cut, state, signal_data, background_data,
@@ -413,8 +434,16 @@ class ExistentialDecisionTree:
 
     def _apply_to_class(self, cut, state, data) -> AppliedClassSplit:
         subset = self._slice_data(data, state.sample_indices)
-        candidate_mask = state.active_slot_mask & cut.evaluate(subset)
-        return AppliedClassSplit(self.aggregation.evaluate(candidate_mask), candidate_mask)
+        passed, candidate_mask = self._route(cut, self.aggregation, subset, state.active_slot_mask)
+        return AppliedClassSplit(passed, candidate_mask)
+
+    @staticmethod
+    def _route(cut, aggregation, data, active):
+        if isinstance(cut, EventCut):
+            return cut.evaluate(data), active
+        assert aggregation is not None
+        candidates = active & cut.evaluate(data)
+        return aggregation.evaluate(candidates), candidates
 
     @staticmethod
     def _child_states(state, split) -> tuple[NodeTrainingState, NodeTrainingState]:
@@ -458,6 +487,9 @@ class ExistentialDecisionTree:
         return SetInput(
             X=data.X[rows], observables=data.observables,
             slot_mask=data.slot_mask[rows], value_mask=data.value_mask[rows],
+            event_features=None if data.event_features is None else data.event_features[rows],
+            event_observables=data.event_observables,
+            event_value_mask=None if data.event_value_mask is None else data.event_value_mask[rows],
         )
 
     def _require_fitted(self) -> None:
@@ -487,9 +519,14 @@ class ExistentialDecisionTree:
                 )):
                     raise ValueError(f"Leaf {node_id} contains split information")
                 return
-            if node.aggregation is None:
-                raise ValueError(f"Internal node {node_id} requires an aggregation")
-            node.cut.validate(self.observables)
+            if isinstance(node.cut, EventCut):
+                if node.aggregation is not None:
+                    raise ValueError(f"Event node {node_id} cannot use slot aggregation")
+                node.cut.validate(self.event_observables)
+            else:
+                if node.aggregation is None:
+                    raise ValueError(f"Internal node {node_id} requires an aggregation")
+                node.cut.validate(self.observables)
             if node.positive_child_id is None or node.negative_child_id is None:
                 raise ValueError(f"Internal node {node_id} requires two children")
             for child_id, branch in (

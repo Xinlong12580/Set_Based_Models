@@ -1,7 +1,7 @@
 """Set-based interpretable classification models."""
 
 from .core import (
-    BinaryPerformance, CategoryCut, Comparison, CountAggregation,
+    BinaryPerformance, CategoryCut, Comparison, CountAggregation, Cut, EventCut,
     ObservableKind, ObservableSpec, SetInput, SlotCut, ThresholdCut,
 )
 from .decision_tree import (
@@ -14,7 +14,7 @@ from .decision_tree import (
 from .rule_list import (
     BeamRuleGenerator, ExistentialRule, ExistentialRuleList, FScoreRuleScore,
     LikelihoodRatioRuleScore, PurityCoverageRuleScore, RuleScorer,
-    RuleStatistics, RuleStep, RuleUnion, SignificanceRuleScore, TPRFPRRuleScore,
+    RulePruningResult, RuleStatistics, RuleStep, RuleUnion, SignificanceRuleScore, TPRFPRRuleScore,
     TargetFPRRuleScore, placeholder_rule_score,
 )
 

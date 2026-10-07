@@ -80,7 +80,7 @@ def jaccard(left, right):
     return np.count_nonzero(left & right) / union if union else 1.0
 
 
-def test_beam_retention_discards_rules_similar_in_both_classes():
+def test_beam_retention_discards_rules_with_similar_event_and_slot_states():
     signal, background = training_data()
     threshold = 0.5
     model = ExistentialRuleList(
@@ -99,10 +99,52 @@ def test_beam_retention_discards_rules_similar_in_both_classes():
             background_similarity = jaccard(
                 rule.predict(background), previous.predict(background)
             )
+            signal_slot_similarity = jaccard(
+                rule.slot_mask(signal), previous.slot_mask(signal)
+            )
+            background_slot_similarity = jaccard(
+                rule.slot_mask(background), previous.slot_mask(background)
+            )
             assert not (
                 signal_similarity >= threshold
                 and background_similarity >= threshold
+                and signal_slot_similarity >= threshold
+                and background_slot_similarity >= threshold
             )
+
+
+def test_beam_preserves_event_equivalent_prefixes_with_different_slots():
+    observables = (
+        ObservableSpec("a", "categorical", {0: "a0", 1: "a1"}),
+        ObservableSpec("b", "categorical", {0: "b0", 1: "b1"}),
+        ObservableSpec("c", "categorical", {0: "c0", 1: "c1"}),
+    )
+    signal = np.array([
+        [[0, 1, 0], [1, 0, 1], [1, 1, 0]],
+        [[0, 1, 0], [1, 0, 1], [1, 1, 0]],
+    ])
+    background = np.array([
+        [[0, 1, 0], [1, 0, 0], [1, 1, 1]],
+        [[0, 1, 0], [1, 0, 0], [1, 1, 1]],
+    ])
+
+    model = ExistentialRuleList(
+        observables,
+        max_rule_depth=2,
+        beam_width=20,
+        scoring_function=score,
+    ).fit(signal, background)
+
+    perfect_rules = [
+        rule for rule in model.candidate_rules_
+        if rule.statistics.true_positive_rate == 1.0
+        and rule.statistics.false_positive_rate == 0.0
+    ]
+    assert perfect_rules
+    assert any(
+        {cut.observable_index for cut in rule.cuts} == {1, 2}
+        for rule in perfect_rules
+    )
 
 
 def test_beam_similarity_thresholds_are_validated():

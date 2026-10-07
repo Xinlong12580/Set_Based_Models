@@ -1,4 +1,4 @@
-"""Input definitions and validation for set-based decision trees.
+"""Input definitions and validation for set-based models.
 
 The canonical input is a dense, three-dimensional NumPy array with axes
 ``(sample, slot, observable)``.  All values are stored as ``float64``;
@@ -13,6 +13,12 @@ Padding and missing measurements have distinct representations:
 
 Values in padded slots and explicitly missing measurements are ignored and
 need not be finite.
+
+Optional ``event_features`` have shape ``(sample, event_observable)`` and a
+separate ``event_observables`` schema. Their rows align with ``X``; valid event
+values must be finite, even for events with no valid slots. Schema-declared
+Boolean validity columns automatically mask their associated measurements.
+For native event-only input, omit ``X``; the internal object array has zero slots.
 """
 
 from __future__ import annotations
@@ -51,17 +57,26 @@ class ObservableSpec:
         For categorical observables, a non-empty mapping from integer codes to
         display labels. Codes must be compact non-negative integers beginning
         at zero. It must be omitted for all other kinds.
+    validity_column:
+        Optional name of a separate Boolean column in the same schema. Every
+        cut on this measurement requires the flag to equal True. Undefined
+        stored values are ignored in validation and threshold generation.
     """
 
     name: str
     kind: ObservableKind | str
     categories: Mapping[int, str] | None = None
+    validity_column: str | None = None
 
     def __post_init__(self) -> None:
         name = self.name.strip()
         if not name:
             raise ValueError("Observable name must not be empty")
         object.__setattr__(self, "name", name)
+        if self.validity_column is not None:
+            if not isinstance(self.validity_column, str) or not self.validity_column.strip():
+                raise ValueError("validity_column must be a nonempty column name or None")
+            object.__setattr__(self, "validity_column", self.validity_column.strip())
 
         try:
             kind = ObservableKind(self.kind)
@@ -116,7 +131,7 @@ class ObservableSpec:
 
 @dataclass(frozen=True, slots=True)
 class SetInput:
-    """Validated inputs for fitting or evaluating a set-based tree.
+    """Validated inputs for fitting or evaluating a set-based model.
 
     Construction converts ``X`` to a C-contiguous ``float64`` array and masks
     to Boolean arrays. Validation is intentionally strict: discrete values must
@@ -133,40 +148,67 @@ class SetInput:
     value_mask: NDArray[np.bool_]
     y: NDArray[np.int64] | None = None
     sample_weight: NDArray[np.float64] | None = None
+    event_features: NDArray[np.float64] | None = None
+    event_observables: tuple[ObservableSpec, ...] = ()
+    event_value_mask: NDArray[np.bool_] | None = None
 
     @classmethod
     def from_arrays(
         cls,
-        X: ArrayLike,
-        observables: Sequence[ObservableSpec],
+        X: ArrayLike | None = None,
+        observables: Sequence[ObservableSpec] = (),
         *,
         y: ArrayLike | None = None,
         slot_mask: ArrayLike | None = None,
         value_mask: ArrayLike | None = None,
         sample_weight: ArrayLike | None = None,
+        event_features: ArrayLike | None = None,
+        event_observables: Sequence[ObservableSpec] = (),
     ) -> SetInput:
         """Convert and validate array-like inputs.
 
         If ``slot_mask`` is omitted, all slots are considered real. If
         ``value_mask`` is omitted, all observables of real slots are considered
-        present. A supplied value mask cannot mark a value present in a padded
-        slot.
+        present unless its schema declares a false validity flag. A supplied
+        value mask cannot mark a value present in a padded slot, and is ANDed
+        with schema-declared validity guards.
+
+        If event observables are configured, event features must be provided
+        with shape ``(n_samples, len(event_observables))``. Names are unique
+        within each schema; slot and event schemas may share names.
+        Omit X for native event-only input. Event features then define the row
+        count, with zero object slots internally (no dummy objects). Object
+        masks cannot be supplied without an object tensor.
         """
 
-        try:
-            x_array = np.asarray(X, dtype=np.float64)
-        except (TypeError, ValueError) as exc:
-            raise TypeError("X must be convertible to a numeric float64 array") from exc
+        specs = tuple(observables)
+        event_specs = _validate_event_observables(event_observables)
+        if X is None:
+            if event_features is None or not event_specs:
+                raise ValueError("Without X, event_features and event_observables are required")
+            if slot_mask is not None or value_mask is not None:
+                raise ValueError("Object masks cannot be supplied without X")
+            try:
+                events = np.asarray(event_features, dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("event_features must be a numeric array") from exc
+            if events.ndim != 2:
+                raise ValueError("event_features must be a two-dimensional array")
+            x_array = np.empty((events.shape[0], 0, len(specs)), dtype=np.float64)
+        else:
+            try:
+                x_array = np.asarray(X, dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("X must be convertible to a numeric float64 array") from exc
         if x_array.ndim != 3:
             raise ValueError(
                 "X must have shape (n_samples, n_slots, n_observables); "
                 f"received {x_array.shape}"
             )
         n_samples, n_slots, n_observables = x_array.shape
-        if n_slots == 0 or n_observables == 0:
+        if X is not None and (n_slots == 0 or n_observables == 0):
             raise ValueError("X must contain at least one slot and one observable")
 
-        specs = tuple(observables)
         if len(specs) != n_observables:
             raise ValueError(
                 f"Expected {n_observables} observable specifications, received {len(specs)}"
@@ -176,6 +218,7 @@ class SetInput:
         names = [spec.name for spec in specs]
         if len(set(names)) != len(names):
             raise ValueError("Observable names must be unique")
+        _validate_validity_columns(specs)
 
         if slot_mask is None:
             slots = np.ones((n_samples, n_slots), dtype=np.bool_)
@@ -188,6 +231,7 @@ class SetInput:
             values = _as_bool_mask(value_mask, x_array.shape, "value_mask")
             if np.any(values & ~slots[..., None]):
                 raise ValueError("value_mask cannot mark values present in padded slots")
+        values = _apply_validity_guards(x_array, specs, values)
 
         if np.any(~np.isfinite(x_array[values])):
             raise ValueError("Present values in valid slots must be finite")
@@ -202,6 +246,26 @@ class SetInput:
             if sample_weight is None
             else _validate_sample_weight(sample_weight, n_samples)
         )
+        events = event_values = None
+        if event_features is None:
+            if event_specs:
+                raise ValueError("event_features is required when event_observables are configured")
+        else:
+            try:
+                events = np.asarray(event_features, dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                raise TypeError("event_features must be a numeric array") from exc
+            expected = (n_samples, len(event_specs))
+            if events.shape != expected:
+                raise ValueError(
+                    f"event_features must have shape {expected}; received {events.shape}"
+                )
+            event_values = _apply_validity_guards(events, event_specs, np.ones(events.shape, dtype=bool))
+            if np.any(~np.isfinite(events[event_values])):
+                raise ValueError("Valid event_features must contain finite values")
+            for index, spec in enumerate(event_specs):
+                _validate_observable_values(events[:, index][event_values[:, index]], spec)
+            events = np.ascontiguousarray(events)
 
         return cls(
             X=np.ascontiguousarray(x_array),
@@ -210,6 +274,9 @@ class SetInput:
             value_mask=np.ascontiguousarray(values),
             y=labels,
             sample_weight=weights,
+            event_features=events,
+            event_observables=event_specs,
+            event_value_mask=event_values,
         )
 
     @property
@@ -231,6 +298,46 @@ class SetInput:
             if spec.name == name:
                 return index
         raise KeyError(f"Unknown observable {name!r}")
+
+
+def _validate_event_observables(observables: Sequence[ObservableSpec]) -> tuple[ObservableSpec, ...]:
+    specs = tuple(observables)
+    if not all(isinstance(spec, ObservableSpec) for spec in specs):
+        raise TypeError("Every event observable must be an ObservableSpec")
+    if len({spec.name for spec in specs}) != len(specs):
+        raise ValueError("Event observable names must be unique")
+    _validate_validity_columns(specs)
+    return specs
+
+
+def _validate_validity_columns(specs):
+    """Return measurement/flag indices; guards must be unguarded Booleans."""
+    indices = {spec.name: index for index, spec in enumerate(specs)}
+    result = []
+    for index, spec in enumerate(specs):
+        if spec.validity_column is None:
+            continue
+        if spec.validity_column not in indices:
+            raise ValueError(f"Unknown validity column {spec.validity_column!r} for {spec.name!r}")
+        flag = indices[spec.validity_column]
+        if flag == index or specs[flag].kind is not ObservableKind.BOOLEAN or specs[flag].validity_column is not None:
+            raise ValueError(f"Validity column for {spec.name!r} must be a separate, unguarded Boolean")
+        result.append((index, flag))
+    return tuple(result)
+
+
+def _apply_validity_guards(array, specs, mask):
+    pairs = _validate_validity_columns(specs)
+    if not pairs:
+        return mask
+    result = mask.copy()
+    for index, flag in pairs:
+        flag_values = array[..., flag][mask[..., flag]]
+        if np.any(~np.isfinite(flag_values)):
+            raise ValueError(f"Validity column {specs[flag].name!r} must be finite")
+        _validate_observable_values(flag_values, specs[flag])
+        result[..., index] &= mask[..., flag] & (array[..., flag] == 1)
+    return result
 
 
 def _as_bool_mask(value: ArrayLike, shape: tuple[int, ...], name: str) -> NDArray[np.bool_]:
@@ -286,4 +393,3 @@ def _validate_sample_weight(value: ArrayLike, n_samples: int) -> NDArray[np.floa
     if np.any(~np.isfinite(weights)) or np.any(weights < 0):
         raise ValueError("sample_weight must be finite and non-negative")
     return np.ascontiguousarray(weights)
-

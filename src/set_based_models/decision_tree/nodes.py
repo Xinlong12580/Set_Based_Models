@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from ..core.predicates import CountAggregation, SlotCut
+from ..core.predicates import CountAggregation, Cut
 
 
 class Branch(str, Enum):
@@ -30,13 +30,16 @@ class NodeStatistics:
 
 @dataclass(slots=True)
 class Node:
-    """One fitted node, linked to its relatives by stable integer IDs."""
+    """One fitted node, linked to its relatives by stable integer IDs.
+
+    EventCut nodes have no aggregation; slot-cut nodes have CountAggregation.
+    """
 
     node_id: int
     depth: int
     parent_id: int | None = None
     branch_from_parent: Branch | str | None = None
-    cut: SlotCut | None = None
+    cut: Cut | None = None
     aggregation: CountAggregation | None = None
     positive_child_id: int | None = None
     negative_child_id: int | None = None
@@ -62,6 +65,6 @@ class Node:
 @dataclass(frozen=True, slots=True)
 class PathStep:
     source_node_id: int
-    cut: SlotCut
-    aggregation: CountAggregation
+    cut: Cut
+    aggregation: CountAggregation | None
     branch: Branch

@@ -2,9 +2,10 @@
 
 from .data import ObservableKind, ObservableSpec, SetInput
 from .metrics import BinaryPerformance
-from .predicates import CategoryCut, Comparison, CountAggregation, SlotCut, ThresholdCut
+from .predicates import CategoryCut, Comparison, CountAggregation, Cut, EventCut, SlotCut, ThresholdCut
 
 __all__ = [
     "BinaryPerformance", "CategoryCut", "Comparison", "CountAggregation",
     "ObservableKind", "ObservableSpec", "SetInput", "SlotCut", "ThresholdCut",
+    "Cut", "EventCut",
 ]
