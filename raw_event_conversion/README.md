@@ -8,6 +8,18 @@ object caps or precision downcasts. The separate `obj` tensor uses the old
 float32, PT-ranked, top-k layout extended with object properties and validity
 flags, excluding the MET slot.
 
+The saved schemas link measurements to their Boolean validity columns. The
+current flexible ERL runner reads these links and automatically guards each
+measurement cut; linked flags are guard-only by default. If constructing core
+inputs manually, preserve these links in `ObservableSpec.validity_column`.
+Zero filling alone does not provide this protection.
+
+Optionally add `--with-pair-tensor` to also save a separate particle-pair tensor,
+its presence mask, and ERL-compatible feature schema. This does not replace the
+original tensors. See [Particle-pair tensors](PAIRS.md) for features, ordering,
+memory requirements, and ERL examples. The flexible ERL runner reads `obj` by
+default; add `--pair-tensor` to select the saved pairs instead.
+
 ## Run
 
 From the repository root in the `hep` environment:
@@ -46,8 +58,9 @@ The PUPPI switch preserved names, ordering, and tensor width, but changed
 values and source definitions. Charged raw-PF PT features appended eight more
 columns without reordering the existing 139. Impact-parameter features now
 append another 38, preserving those 147. Ranked lepton impact parameters append
-eight more, preserving those 185. `conversion_metadata.schema_version` is now 7
+eight more, preserving those 185. `conversion_metadata.schema_version` is 7
 because conversion saves real objects with additional properties and validity flags;
+pair-enabled output uses version 8.
 `object_pt_columns` and `met_columns` record the default input mappings.
 Per-feature `required_columns` also identify the sources. Reconvert both
 classes and remake mixtures; existing `.pt` files are not updated or relabeled.
@@ -83,10 +96,10 @@ Older conversion pipelines and their object layouts are not changed.
   - `sum_pt_over_met_valid` (Boolean): true exactly when that ratio is defined.
     Zero activity with positive MET has a valid zero ratio; zero MET does not.
 
-  All five are directly available to EDT/ERL as event inputs. **Validity flags
-  are ordinary inputs, not automatic cut guards**: require the corresponding
-  flag in a physical MET/ratio rule when invalid values are possible. In
-  particular, a small-ratio cut alone may select invalid zero placeholders.
+  All five are available as event inputs. Schema-aware measurement cuts require
+  the linked validity flag automatically, so invalid zero placeholders cannot
+  satisfy a MET/ratio cut. Manual or legacy loaders that discard validity links
+  must supply this requirement explicitly.
   Add `--without-met-features` (Python: `include_met_features=False`) to omit
   MET, its ratio, object-MET angles, and all their flags; other features remain (179 columns).
 
@@ -124,8 +137,8 @@ Older conversion pipelines and their object layouts are not changed.
 
   Ratio columns are continuous, use only their own raw PT collection, and are
   unaffected by count thresholds. Defined ratios lie in [0, 1]. Undefined ratios
-  use zero with a false flag, never NaN/infinity; flags are **not automatic model
-  guards**, so require the appropriate validity flag for physical ratio cuts.
+  use zero with a false flag, never NaN/infinity. The saved schema links each
+  ratio to its flag for automatic guarding by schema-aware model inputs.
   No reciprocal leading/subleading ratio or cross-type composition ratio is added.
 
   Next, absolute pseudorapidity and Boolean validity flags are appended for
@@ -143,8 +156,8 @@ Older conversion pipelines and their object layouts are not changed.
   `L1T_JetPuppiAK4_Eta`; PT and eta arrays must have matching lengths per event.
   Missing objects or missing/nonfinite eta values use zero with a false flag.
   A real eta of zero has a true flag. Invalid eta does **not** promote another
-  object into its rank or change multiplicities/PT sums. Require the matching
-  validity flag when interpreting eta cuts; flags are not automatic model guards.
+  object into its rank or change multiplicities/PT sums. Schema-aware cuts
+  automatically require the matching validity flag.
   No eta acceptance cut or signed eta/phi feature is added.
 
   Next, three pair separations and their Boolean validity flags are appended,
@@ -168,8 +181,8 @@ Older conversion pipelines and their object layouts are not changed.
   Delta eta requires two finite eta values, delta phi requires two finite phi
   values, and delta R requires both. A missing pair or undefined/nonfinite result
   is stored as zero with a false validity flag; a physical zero separation has
-  a true flag. Require the corresponding validity flag in physical angular rules,
-  since flags are ordinary model inputs rather than automatic cut guards.
+  a true flag. Schema-aware angular cuts automatically require the corresponding
+  validity flag.
 
   Next, the same three angular separations and their validity flags are
   appended for the **leading objects of different types**, preserving the first
@@ -220,7 +233,7 @@ Older conversion pipelines and their object layouts are not changed.
   threshold. Consequently even a soft jet can determine this minimum. Invalid
   jet phi entries are excluded from that minimum. No eligible jet, undefined MET
   direction, or an invalid leading object gives zero plus a false validity flag;
-  real zero alignment is valid. Flags are not automatic cut guards.
+  real zero alignment is valid. Each angle's schema links its automatic guard.
 
   These features are enabled even with `--without-native-event-info`, but are
   omitted by `--without-met-features` (`include_met_features=False` in Python).
@@ -313,8 +326,8 @@ Older conversion pipelines and their object layouts are not changed.
   Each counts eligible charged candidates whose corresponding measurement
   is invalid. Subtract it from `n_charged_pf_pt_gt2` to obtain the number
   with valid measurements. A conversion warning reports invalid counts.
-  These columns describe measurement availability, not exotic physics;
-  neither they nor any other feature act as automatic model cut guards.
+  These columns describe measurement availability, not exotic physics. They are
+  diagnostic counts, not Boolean validity guards for other measurements.
 
   **Important production limitation:** the checked COLLIDE2V v1.0 card
   does not execute impact-parameter smearing. In a 32-event check of one
@@ -346,9 +359,9 @@ Older conversion pipelines and their object layouts are not changed.
   flag; a finite physical D0 of zero has a true flag. PT and D0 arrays must
   align; missing required columns or length mismatches are errors.
 
-  Flags are ordinary model inputs, not automatic guards: require the
-  corresponding flag for physical upper-bound cuts that could accept invalid
-  zero placeholders. No lepton significance or ErrorD0 input is added.
+  Schema-aware cuts automatically require the corresponding flag, including
+  upper-bound cuts that could otherwise accept invalid zero placeholders.
+  No lepton significance or ErrorD0 input is added.
   The producer-resolution caveat above also applies to these D0 observables;
   their presence alone does not establish realistic displaced-trigger performance.
   The exported `ranked_abs_dxy_features("electrons")` or `("muons")` factory
@@ -422,10 +435,11 @@ Older conversion pipelines and their object layouts are not changed.
   positive neutral count give `0, 1`. A genuine zero lepton D0 similarly gives
   `abs_d0=0, abs_d0_valid=1`.
 
-  **Validity flags are ordinary input columns, not automatic guards.** Use
-  `type_id in {muon} AND abs_d0_valid == 1 AND abs_d0 > threshold`, for example.
-  A jet isolation cut without its flag would otherwise select meaningless zero
-  placeholders. `obj_feature_schema` describes every column's kind and units,
+  **Schema-linked validity flags automatically guard measurement cuts.** For
+  example, `abs_d0 > threshold` also requires `abs_d0_valid == 1` on the same
+  object. An inapplicable jet isolation value cannot satisfy an isolation cut.
+  The flexible ERL runner does not independently search linked flags unless
+  `--allow-validity-cuts` is enabled. `obj_feature_schema` describes each column's kind and units,
   applicable types, raw sources, definition, and associated validity column.
   All applicable raw fields must exist and align with their collection's PT,
   including fields in empty collections. No D0 significance, jet truth flavour,
@@ -435,10 +449,10 @@ Older conversion pipelines and their object layouts are not changed.
   both the real `obj` tensor and event features unchanged when mixing.
 
 Existing conversion commands now produce the real `obj` tensor automatically;
-no new flag is needed. Event-only runners continue to ignore `obj` and work
-unchanged. Existing real-object runners hardcoded to 23 slots and four columns
-will need a separate update to use the 22-slot, 20-column layout and its schema;
-they are not changed here.
+no new flag is needed. Event-only runners ignore `obj`. The current flexible
+ERL runner loads its columns and schema dynamically; `--basic-object-features`
+selects the four base columns. Legacy runners hardcoded to an older layout
+are not interchangeable with schema-aware loading.
 The public `build_object_tensor(records)` function in `objects.py` can also
 be used independently on flat raw Awkward records.
 

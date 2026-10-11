@@ -162,10 +162,83 @@ class FlexibleERLRunnerTests(unittest.TestCase):
         self.assertEqual(load_report(self.report)["configuration"]["object_cut_priority"],
                          ["type_id", "pt"])
 
+    def test_repeated_priority_entries_are_preserved_in_incomplete_reports(self):
+        priority = ["type_id", "type_id", "pt"]
+        report, _ = self.run_cli(["--object-only", "--basic-object-features",
+                                 "--object-cut-priority", *priority])
+        self.assertEqual(report["configuration"]["object_cut_priority"], priority)
+        records = report["results"]["rules"]
+        self.assertTrue(any(r["object_cut_priority_remaining"] == ["type_id", "pt"]
+                            for r in records))
+        self.assertTrue(any(not r["object_cut_priority_remaining"] for r in records))
+        for record in records:
+            names = [s["cut"]["observable"] for s in record["steps"]]
+            self.assertEqual(names[:3], priority[:len(names)])
+            self.assertEqual(record["object_cut_priority_remaining"], priority[len(names):])
+
+    def test_directed_priority_cli_tracks_uncompleted_upper_bound(self):
+        priority = ["pt:>", "pt:<="]
+        report, log = self.run_cli(["--object-only", "--basic-object-features",
+                                   "--object-cut-priority", *priority])
+        self.assertEqual(report["configuration"]["object_cut_priority"], priority)
+        self.assertIn("pt:> -> pt:<=", log)
+        self.assertTrue(report["results"]["rules"])
+        for record in report["results"]["rules"]:
+            # Fixture has only PT=5 and PT=50, so each lower bound leaves
+            # constant PT and cannot generate an upper-bound refinement.
+            self.assertEqual(record["depth"], 1)
+            self.assertEqual(record["steps"][0]["cut"]["comparison"], ">")
+            self.assertEqual(record["object_cut_priority_remaining"], ["pt:<="])
+
+    def test_completion_requirement_is_final_only_and_audited(self):
+        priority = ["type_id", "type_id", "pt"]
+        baseline, _ = self.run_cli(["--object-only", "--basic-object-features",
+                                    "--object-cut-priority", *priority])
+        required, log = self.run_cli(["--object-only", "--basic-object-features",
+                                      "--object-cut-priority", *priority, "--require-complete-priority"],
+                                     report=self.directory / "complete.txt")
+        before, after = baseline["results"]["rules"], required["results"]["rules"]
+        self.assertEqual([(r["raw_rule"], r["score"]) for r in before],
+                         [(r["raw_rule"], r["score"]) for r in after])
+        self.assertTrue(required["configuration"]["require_complete_priority"])
+        self.assertIn("complete list required for final retention", log)
+        self.assertGreater(required["summary"]["incomplete_priority_rules_removed"], 0)
+        self.assertTrue(any(r["retained_after_final_pruning"] for r in after))
+        for record in after:
+            self.assertEqual(record["object_cut_priority_complete"], not record["object_cut_priority_remaining"])
+            if not record["object_cut_priority_complete"]:
+                self.assertEqual(record["pruning"]["status"], "incomplete_object_priority")
+            if record["retained_after_final_pruning"]:
+                self.assertTrue(record["object_cut_priority_complete"])
+
+    def test_completion_can_return_empty_report_when_directed_prefix_cannot_extend(self):
+        report, _ = self.run_cli(["--object-only", "--basic-object-features",
+                                  "--object-cut-priority", "pt:>", "pt:<=", "--require-complete-priority"])
+        self.assertTrue(report["results"]["rules"])
+        self.assertEqual(report["summary"]["pruned_rule_count"], 0)
+        self.assertTrue(all(r["pruning"]["status"] == "incomplete_object_priority"
+                            for r in report["results"]["rules"]))
+
+    def test_completion_with_empty_priority_is_a_noop(self):
+        report, _ = self.run_cli(["--event-only", "--require-complete-priority"])
+        self.assertEqual(report["configuration"]["object_cut_priority"], [])
+        self.assertEqual(report["summary"]["incomplete_priority_rules_removed"], 0)
+        self.assertTrue(all(r["object_cut_priority_complete"] for r in report["results"]["rules"]))
+
+    def test_repeated_priority_reporting_does_not_count_event_cuts(self):
+        priority = ["pt", "pt"]
+        report, _ = self.run_cli(["--basic-object-features", "--object-cut-priority", *priority])
+        for record in report["results"]["rules"]:
+            names = [s["cut"]["observable"] for s in record["steps"] if s["scope"] == "slot"]
+            self.assertEqual(names[:2], priority[:len(names)])
+            self.assertEqual(record["object_cut_priority_remaining"], priority[len(names):])
+        self.assertTrue(any(all(s["scope"] == "event" for s in r["steps"])
+                            and r["object_cut_priority_remaining"] == priority
+                            for r in report["results"]["rules"]))
+
     def test_object_cut_priority_errors_before_training_and_writing_reports(self):
         for extra in (("--event-only", "--object-cut-priority", "pt"),
                       ("--object-cut-priority", "missing"),
-                      ("--object-cut-priority", "pt", "pt"),
                       ("--object-cut-priority", "charge_valid"),
                       ("--basic-object-features", "--object-cut-priority", "charge"),
                       ("--object-cut-priority",)):
@@ -589,11 +662,24 @@ class FlexibleERLRunnerTests(unittest.TestCase):
 
     def test_invalid_configuration_is_rejected_without_reports(self):
         for extra in (("--reference-penalty", "-1"), ("--stricter-score-improvement", "nan"),
-                      ("--stricter-score-improvement", "-.01"), ("--input-rate-mhz", "0"),
+                      ("--input-rate-mhz", "0"),
                       ("--max-trigger-rate-khz", "inf"), ("--signal-similarity-threshold", "2"),
                       ("--nested-score-gap", "0")):
             with self.subTest(extra=extra):
                 self.assert_cli_error(extra)
+
+    def test_negative_stricter_threshold_is_accepted_saved_and_used(self):
+        captured = []
+        original = runner.ExistentialRuleList.prune_candidates
+
+        def prune(model, **kwargs):
+            captured.append(kwargs["stricter_score_improvement"])
+            return original(model, **kwargs)
+
+        with patch.object(runner.ExistentialRuleList, "prune_candidates", prune):
+            report, _ = self.run_cli(["--object-only", "--stricter-score-improvement", "-0.008"])
+        self.assertEqual(captured, [-.008])
+        self.assertEqual(report["configuration"]["stricter_score_improvement"], -.008)
 
     def test_constant_features_can_produce_empty_candidate_report(self):
         for path, signal in ((self.signal, True), (self.background, False)):

@@ -62,22 +62,14 @@ def object_feature_schema():
     return schema
 
 
-def build_object_tensor(records):
-    """Return float32 [events, 22, 20] with zeros for padding/invalid fields.
-
-    Finite positive PT defines object presence and stable within-type ranking.
-    First four columns retain the old PT/Eta/Phi/type_id layout. Eight extra
-    values and their eight validity flags follow. Non-applicable values are
-    zero/false; measured zeros can be valid. Undefined count fractions are
-    zero/false. Flags are ordinary features, not automatic model cut guards.
-    No eta, isolation, overlap-removal or threshold-grid selections are added.
-    All applicable raw fields must exist and align, even for empty collections.
-    Event features are computed separately from the full collections.
-    """
+def _rank_object_arrays(records):
+    """Shared float64 ranking, retaining coordinate validity before zero fill."""
     missing = set(RAW_OBJECT_COLUMNS) - set(records.fields)
     if missing:
         raise ValueError(f"Missing raw object columns: {sorted(missing)}")
-    objects = np.zeros((len(records), sum(OBJECT_SLOTS.values()), len(OBJECT_COLUMNS)), dtype=np.float32)
+    shape = (len(records), sum(OBJECT_SLOTS.values()))
+    objects = np.zeros((*shape, len(OBJECT_COLUMNS)), dtype=np.float64)
+    coordinate_validity = {name: np.zeros(shape, dtype=bool) for name in ("eta", "phi")}
     indices = {name: index for index, name in enumerate(OBJECT_COLUMNS)}
     start = 0
     for type_id, (kind, width) in enumerate(OBJECT_SLOTS.items()):
@@ -112,12 +104,26 @@ def build_object_tensor(records):
             if name in ("n_charged", "n_neutrals", "charge"):
                 valid &= values == np.floor(values)
             values = np.where(valid, values, 0.0)
-            if np.any(np.abs(values) > np.finfo(np.float32).max):
-                raise ValueError(f"{kind} object values exceed the float32 obj format.")
             objects[:, start:start + width, indices[name]] = values
+            if name in coordinate_validity:
+                coordinate_validity[name][:, start:start + width] = valid
             if name in OBJECT_FEATURES:
                 objects[:, start:start + width, indices[name + "_valid"]] = valid
         objects[:, start:start + width, indices["type_id"]] = np.where(
             np.isfinite(ranked["pt"]), type_id, 0)
         start += width
-    return torch.from_numpy(objects)
+    return objects, coordinate_validity
+
+
+def build_object_tensor(records):
+    """Return float32 [events, 22, 20], preserving the original object format.
+
+    Finite positive PT defines presence and stable within-type ranking. Extra
+    measurements have schema-linked validity flags; eta/phi remain zero-filled
+    without flags in this legacy object tensor. No additional physics cuts are
+    applied. Event summaries are computed separately before slot caps.
+    """
+    objects, _ = _rank_object_arrays(records)
+    if np.any(np.abs(objects) > np.finfo(np.float32).max):
+        raise ValueError("Object values exceed the float32 obj format.")
+    return torch.from_numpy(objects.astype(np.float32))

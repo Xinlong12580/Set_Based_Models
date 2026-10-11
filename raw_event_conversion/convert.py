@@ -13,6 +13,7 @@ import torch
 
 from .features import LEPTON_D0_COLUMNS, MET_COLUMNS, PF_IMPACT_COLUMNS, PT_COLUMNS, build_event_tensor, default_features
 from .objects import OBJECT_COLUMNS, OBJECT_SLOTS, RAW_OBJECT_COLUMNS, build_object_tensor, object_feature_schema
+from .pairs import LEPTON_MASSES, PAIR_COLUMNS, PAIR_OBJECT_INDICES, build_pair_tensor, pair_feature_schema
 
 
 # Producer values, not sums recomputed from PF candidates. Rho indices retain
@@ -59,7 +60,8 @@ def build_native_info(records):
 
 def convert_raw_parquet_to_pt(
     sources, output, *, label, max_events=None, thresholds=None,
-    extra_features=(), include_native_event_info=True, include_met_features=True, overwrite=True,
+    extra_features=(), include_native_event_info=True, include_met_features=True,
+    include_pair_tensor=False, overwrite=True,
 ):
     """Convert raw file(s) in supplied order, preserving zero-object events.
 
@@ -76,8 +78,9 @@ def convert_raw_parquet_to_pt(
     obj extends the old float32 PT/Eta/Phi/type_id layout, with 10 PUPPI jets,
     4 tight muons, 4 electrons and 4 tight photons (22 slots, no MET slot).
     Each collection is PT-ranked and zero-padded; event features are not capped.
-    Eight extra object features have matching validity flags for missing or
-    inapplicable measurements. These flags are not automatic model cut guards.
+    Eight extra object features have matching schema-linked validity flags.
+    include_pair_tensor adds pair_obj/pair_slot_mask and their schema, without
+    replacing obj or event_features. Pair generation uses the same object caps.
     Charged PF counts/sums use unweighted L1T_PFPart_PT and finite nonzero
     L1T_PFPart_Charge, without a vertex selection or additional candidate cap.
     Impact-parameter bins use producer D0/ErrorD0 in mm; invalid measurements
@@ -97,6 +100,8 @@ def convert_raw_parquet_to_pt(
     if max_events is not None and (isinstance(max_events, bool) or not isinstance(max_events, int)
                                    or max_events < 1):
         raise ValueError("max_events must be a positive integer or None.")
+    if not isinstance(include_pair_tensor, bool):
+        raise TypeError("include_pair_tensor must be a Boolean.")
     output = Path(output).expanduser().absolute()
     source_list = output.with_suffix(".sources.json")
     if output == source_list:
@@ -148,6 +153,8 @@ def convert_raw_parquet_to_pt(
         }
         if include_native_event_info:
             block.update(build_native_info(records))
+        if include_pair_tensor:
+            block["pair_obj"], block["pair_slot_mask"] = build_pair_tensor(records)
         blocks.append(block)
         if remaining is not None:
             remaining -= count
@@ -155,9 +162,10 @@ def convert_raw_parquet_to_pt(
         raise ValueError("The input contains no events.")
 
     dataset = dict(blocks[0])
-    for key, value in dataset.items():
-        if isinstance(value, torch.Tensor):
-            dataset[key] = torch.cat([block[key] for block in blocks], dim=0)
+    if len(blocks) > 1:
+        for key, value in dataset.items():
+            if isinstance(value, torch.Tensor):
+                dataset[key] = torch.cat([block[key] for block in blocks], dim=0)
     count = len(dataset["event_features"])
     dataset.update({
         "event_feature_columns": [feature.name for feature in features], "event_feature_schema": schema,
@@ -193,6 +201,22 @@ def convert_raw_parquet_to_pt(
                                 "lepton_d0_units": "mm",
                                 "met_columns": list(MET_COLUMNS) if include_met_features else []},
     })
+    if include_pair_tensor:
+        dataset.update({
+            "pair_obj_columns": list(PAIR_COLUMNS), "pair_obj_feature_schema": pair_feature_schema(),
+            "pair_object_indices": [list(pair) for pair in PAIR_OBJECT_INDICES],
+        })
+        dataset["conversion_metadata"].update({
+            "schema_version": 8,
+            "pair_tensor": {
+                "slots": len(PAIR_OBJECT_INDICES), "columns": len(PAIR_COLUMNS), "dtype": "float32",
+                "source": "raw values of the same PT-ranked, capped objects as obj",
+                "ordering": "type_id ascending; PT descending within each type; producer-order ties",
+                "self_pairs": False, "reversed_duplicates": False, "padding": 0,
+                "presence_mask": "pair_slot_mask", "validity": "explicit schema-linked flags",
+                "mass_hypotheses_GeV": {**LEPTON_MASSES, "photons": 0.0, "jets": "valid stored Mass"},
+            },
+        })
     names = dataset["event_feature_columns"]
     for observable in ("abs_dxy_mm", "abs_dxysig"):
         invalid = dataset["event_features"][:, names.index(f"n_charged_pf_pt_gt2_{observable}_invalid")].sum().item()

@@ -12,6 +12,7 @@ import numpy as np
 
 from ..core.data import ObservableKind
 from ..core.predicates import CategoryCut, Comparison, EventCut, ThresholdCut
+from .generation import _object_priority_progress
 
 
 @dataclass
@@ -194,14 +195,15 @@ def merge_equivalent_rules(rules):
 
 
 def prune_stricter_rules(result, *, min_score_improvement):
-    """Discard strict logical subsets unless they improve a retained looser rule.
+    """Discard strict subsets unless their score difference exceeds the threshold.
 
     Looser rules are examined first, even when stricter rules score higher.
     Final output is still score-ranked. Equality at the improvement threshold
-    is pruned, with 1e-12 roundoff tolerance. Existing pruning audits are kept.
+    is pruned, with 1e-12 roundoff tolerance. Negative thresholds permit bounded
+    score loss relative to looser rules. Existing pruning audits are kept.
     """
-    if not math.isfinite(min_score_improvement) or min_score_improvement < 0:
-        raise ValueError("min_score_improvement must be finite and nonnegative.")
+    if not math.isfinite(min_score_improvement):
+        raise ValueError("min_score_improvement must be finite.")
     normalized = result.normalized_cuts
     decisions = {rule_id: dict(decision) for rule_id, decision in result.decisions.items()}
     rules = list(result.retained)
@@ -247,17 +249,19 @@ def prune_rule_candidates(
     rules, *, stricter_score_improvement=None, max_reference_acceptance=None,
     similarity_filter=True, signal_similarity_threshold=0.95,
     background_similarity_threshold=0.95,
+    required_object_cut_priority=(),
 ):
     """Select completed rules without changing the original candidate pool.
 
-    Rate filtering precedes logical pruning; optional Jaccard pruning is last.
+    Optional priority completion filtering precedes rate/equivalence/logical
+    pruning; optional Jaccard pruning is last. Completion uses raw ordered cuts
+    rather than simplified predicates, preserving repeats and directions.
     Logical normalization/containment separates event and same-slot predicates,
     and respects minimum object counts. None disables logical pruning.
     Acceptance limits are per-rule weighted training fractions, not OR budgets.
     """
-    if stricter_score_improvement is not None and (
-            not math.isfinite(stricter_score_improvement) or stricter_score_improvement < 0):
-        raise ValueError("stricter_score_improvement must be finite and nonnegative or None.")
+    if stricter_score_improvement is not None and not math.isfinite(stricter_score_improvement):
+        raise ValueError("stricter_score_improvement must be finite or None.")
     if max_reference_acceptance is not None and (
             not math.isfinite(max_reference_acceptance) or not 0 <= max_reference_acceptance <= 1):
         raise ValueError("max_reference_acceptance must be in [0, 1] or None.")
@@ -270,6 +274,7 @@ def prune_rule_candidates(
         if not 0 <= threshold <= 1:
             raise ValueError(f"{name} must be in [0, 1]")
     rules = list(rules)
+    required_object_cut_priority = tuple(required_object_cut_priority or ())
     if len({rule.rule_id for rule in rules}) != len(rules):
         raise ValueError("Rule IDs must be unique.")
     logical = stricter_score_improvement is not None
@@ -284,7 +289,10 @@ def prune_rule_candidates(
     }
     eligible = []
     for rule in rules:
-        if (max_reference_acceptance is not None
+        if (_object_priority_progress(rule.cuts, required_object_cut_priority, rule.observables)
+                < len(required_object_cut_priority)):
+            decisions[rule.rule_id]["status"] = "incomplete_object_priority"
+        elif (max_reference_acceptance is not None
                 and rule.statistics.false_positive_rate > max_reference_acceptance):
             decisions[rule.rule_id]["status"] = "reference_rate_limit"
         else:

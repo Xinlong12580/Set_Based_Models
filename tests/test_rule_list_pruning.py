@@ -35,8 +35,8 @@ def rule(rule_id, score, *cuts, reference_accepted=1):
                            background_selection=np.array([False, True]))
 
 
-def model_with(*rules):
-    model = ExistentialRuleList(OBJECTS, event_observables=EVENTS)
+def model_with(*rules, **kwargs):
+    model = ExistentialRuleList(OBJECTS, event_observables=EVENTS, **kwargs)
     model.candidate_rules_ = list(rules)
     return model
 
@@ -45,6 +45,54 @@ class BuiltInPruningTests(unittest.TestCase):
     def select(self, model, improvement=0, **kwargs):
         return model.prune_candidates(stricter_score_improvement=improvement,
                                       similarity_filter=False, **kwargs)
+
+    def test_completion_precedes_logical_and_similarity_witness_selection(self):
+        partial = rule(0, .2, ThresholdCut(0, ">", 0))
+        window = rule(1, .1, ThresholdCut(0, ">", 10), ThresholdCut(0, "<=", 20))
+        model = model_with(partial, window, object_cut_priority=["pt:>", "pt:<="])
+        self.assertEqual(model.prune_candidates(stricter_score_improvement=0), [partial])
+        self.assertEqual(model.prune_candidates(stricter_score_improvement=0,
+                                                require_complete_priority=True), [window])
+        self.assertEqual(model.pruning_result_.decisions[0]["status"], "incomplete_object_priority")
+        self.assertIsNone(model.pruning_result_.decisions[0]["pruned_by_rule_id"])
+        self.assertEqual(model.candidate_rules_, [partial, window])
+
+    def test_completion_precedes_equivalence_merging_and_counts_repeats(self):
+        partial = rule(0, .2, ThresholdCut(0, ">", 10))
+        complete = rule(1, .2, ThresholdCut(0, ">", 10), ThresholdCut(0, ">", 5))
+        model = model_with(partial, complete, object_cut_priority=["pt", "pt"])
+        self.assertEqual(self.select(model, require_complete_priority=True), [complete])
+        self.assertEqual(model.pruning_result_.normalized_cuts[1], (ThresholdCut(0, ">", 10),))
+        self.assertEqual(model.pruning_result_.decisions[0]["status"], "incomplete_object_priority")
+
+    def test_completion_checks_directions_not_only_feature_names(self):
+        lower_only = rule(0, .2, ThresholdCut(0, ">", 10), ThresholdCut(0, ">", 20))
+        window = rule(1, .1, ThresholdCut(0, ">", 10), ThresholdCut(0, "<=", 20))
+        model = model_with(lower_only, window, object_cut_priority=[("pt", ">"), ("pt", "<=")])
+        self.assertEqual(self.select(model, require_complete_priority=True), [window])
+
+    def test_event_cuts_do_not_complete_object_priority_entries(self):
+        partial = rule(0, .2, event(), ThresholdCut(0, ">", 10))
+        complete = rule(1, .1, event(), ThresholdCut(0, ">", 10), ThresholdCut(0, "<=", 20))
+        model = model_with(partial, complete, object_cut_priority=["pt:>", "pt:<="])
+        self.assertEqual(self.select(model, require_complete_priority=True), [complete])
+
+    def test_empty_priority_is_already_complete(self):
+        model = model_with(rule(0, .2, event()), rule(1, .1, event(1)))
+        expected = model.prune_candidates()
+        self.assertEqual(model.prune_candidates(require_complete_priority=True), expected)
+
+    def test_completion_can_return_no_rules_without_destroying_candidates(self):
+        partial = rule(0, .2, ThresholdCut(0, ">", 10))
+        model = model_with(partial, object_cut_priority=["pt", "pt"])
+        self.assertEqual(self.select(model, require_complete_priority=True), [])
+        self.assertEqual(model.get_rule(0), partial)
+
+    def test_completion_is_applied_before_rate_filter(self):
+        partial = rule(0, .2, ThresholdCut(0, ">", 10), reference_accepted=5)
+        model = model_with(partial, object_cut_priority=["pt", "pt"])
+        self.select(model, require_complete_priority=True, max_reference_acceptance=0)
+        self.assertEqual(model.pruning_result_.decisions[0]["status"], "incomplete_object_priority")
 
     def test_default_preserves_jaccard_policy_and_candidate_identity(self):
         a, b = rule(0, .2, event()), rule(1, .1, event(1))
@@ -86,6 +134,35 @@ class BuiltInPruningTests(unittest.TestCase):
     def test_zero_prunes_tied_or_worse_stricter_rules(self):
         a, b = rule(0, .1, event()), rule(1, .1, event(), event(1))
         self.assertEqual(self.select(model_with(b, a)), [a])
+
+    def test_negative_threshold_allows_bounded_loss_for_tighter_and_extra_cuts(self):
+        a = rule(0, .02, event())
+        b = rule(1, .015, event(threshold=10))
+        c = rule(2, .01, event(), event(1))
+        model = model_with(c, b, a)
+        self.assertEqual(self.select(model, -.008), [a, b])
+        self.assertEqual(model.pruning_result_.decisions[1]["status"], "retained")
+        self.assertEqual(model.pruning_result_.decisions[2]["status"], "stricter_score_improvement")
+        self.assertAlmostEqual(model.pruning_result_.decisions[2]["score_improvement"], -.01)
+        self.assertEqual(self.select(model, -.011), [a, b, c])
+
+    def test_equality_at_negative_improvement_boundary_is_pruned(self):
+        a, b = rule(0, .02, event()), rule(1, .015, event(threshold=10))
+        self.assertEqual(self.select(model_with(b, a), -.005), [a])
+
+    def test_negative_threshold_does_not_disable_final_similarity(self):
+        a, b = rule(0, .02, event()), rule(1, .015, event(threshold=10))
+        model = model_with(a, b)
+        self.assertEqual(model.prune_candidates(stricter_score_improvement=-.008), [a])
+        self.assertEqual(model.pruning_result_.decisions[1]["status"], "similarity")
+
+    def test_mass_window_score_loss_can_be_allowed_in_core_api(self):
+        a = rule(0, .010256148586590519, ThresholdCut(0, ">", 53.9231))
+        b = rule(1, .0026135906714918056,
+                 ThresholdCut(0, ">", 125.08), ThresholdCut(0, "<=", 127.176))
+        model = model_with(b, a)
+        self.assertEqual(self.select(model, -.008), [a, b])
+        self.assertEqual(self.select(model, -.007), [a])
 
     def test_equivalence_prefers_shortest_and_normalizes_self_nesting(self):
         a = rule(0, .1, event(threshold=50), event(threshold=40))
@@ -160,7 +237,7 @@ class BuiltInPruningTests(unittest.TestCase):
         self.select(model)
         original = model.pruning_result_
         for name, values in (
-            ("stricter_score_improvement", (-1, float("nan"), float("inf"))),
+            ("stricter_score_improvement", (float("nan"), float("inf"))),
             ("max_reference_acceptance", (-1, 1.1, float("nan"), float("inf"))),
             ("signal_similarity_threshold", (-1, 1.1, float("nan"))),
             ("background_similarity_threshold", (-1, 1.1, float("nan"))),

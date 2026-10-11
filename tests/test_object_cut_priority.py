@@ -56,6 +56,116 @@ def object_names(rule):
 
 
 class ObjectCutPriorityTests(unittest.TestCase):
+    def test_directed_mass_priority_forms_windows_and_preserves_prefixes(self):
+        specs = (ObservableSpec("pair_mass", "continuous"),)
+        signal = np.array([80, 120, 125, 130, 170], float).reshape(-1, 1, 1)
+        background = np.array([10, 90, 110, 150, 200], float).reshape(-1, 1, 1)
+        model = make_model(specs, max_rule_depth=3,
+                           object_cut_priority=[("pair_mass", ">"), ("pair_mass", "<=")]).fit(
+                               signal, background)
+        self.assertEqual(model.object_cut_priority, ("pair_mass:>", "pair_mass:<="))
+        self.assertEqual({r.depth for r in model.candidate_rules_}, {1, 2, 3})
+        for rule in model.candidate_rules_:
+            self.assertEqual([c.comparison.value for c in rule.cuts[:2]], [">", "<="][:rule.depth])
+            np.testing.assert_array_equal(rule.predict(signal), rule.signal_selection)
+            np.testing.assert_array_equal(rule.predict(background), rule.background_selection)
+        self.assertTrue(any(r.depth == 2 and r.statistics.signal_accepted == 3
+                            and r.statistics.background_accepted == 0 for r in model.candidate_rules_))
+        self.assertEqual({r.cuts[2].comparison.value for r in model.candidate_rules_ if r.depth == 3},
+                         {">", "<="})
+
+    def test_all_four_numeric_directions_are_supported(self):
+        for direction in (">", ">=", "<", "<="):
+            with self.subTest(direction=direction):
+                model = make_model(max_rule_depth=1, object_cut_priority=[f"pt:{direction}"]).fit(
+                    SIGNAL, BACKGROUND)
+                self.assertTrue(model.candidate_rules_)
+                for rule in model.candidate_rules_:
+                    self.assertEqual(object_names(rule), ["pt"])
+                    self.assertEqual(rule.cuts[0].comparison.value, direction)
+                    np.testing.assert_array_equal(rule.predict(SIGNAL), rule.signal_selection)
+
+    def test_event_cuts_do_not_consume_directed_object_entries(self):
+        events = (ObservableSpec("pt", "continuous"),)
+        event_signal, event_background = np.arange(4).reshape(-1, 1), np.zeros((4, 1))
+        model = make_model(event_observables=events,
+                           object_cut_priority=["type_id", "pt:>", "pt:<="]).fit(
+                               SIGNAL, BACKGROUND, signal_event_features=event_signal,
+                               background_event_features=event_background)
+        self.assertTrue(any(not object_names(r) for r in model.candidate_rules_))
+        for rule in model.candidate_rules_:
+            cuts = [c for c in rule.cuts if not isinstance(c, EventCut)]
+            self.assertEqual(object_names(rule), ["type_id", "pt", "pt"][:len(cuts)])
+            self.assertEqual([c.comparison.value for c in cuts[1:]], [">", "<="][:max(0, len(cuts) - 1)])
+
+    def test_guarded_directed_cuts_keep_validity_guards(self):
+        specs = (ObservableSpec("x", "continuous", validity_column="x_valid"),
+                 ObservableSpec("x_valid", "boolean"))
+        signal = np.array([[[np.nan, 0]], [[10, 1]], [[20, 1]]])
+        background = np.array([[[np.nan, 0]], [[1, 1]], [[2, 1]]])
+        model = make_model(specs, object_cut_priority=["x:>", "x:<="]).fit(signal, background)
+        self.assertTrue(any(r.depth == 2 for r in model.candidate_rules_))
+        for rule in model.candidate_rules_:
+            self.assertFalse(rule.signal_selection[0])
+            self.assertEqual([c.comparison.value for c in rule.cuts[:2]], [">", "<="][:rule.depth])
+            self.assertIn("x_valid == True", rule.to_text())
+
+    def test_priority_direction_normalization_and_unusable_directions(self):
+        self.assertEqual(make_model(object_cut_priority=[" pt : >= ", ("eta", " < ")]).object_cut_priority,
+                         ("pt:>=", "eta:<"))
+        self.assertEqual(make_model(object_cut_priority=[("pt", None)]).object_cut_priority, ("pt",))
+        for entry in ("pt:sideways", "pt:", ("pt", "==")):
+            with self.subTest(entry=entry), self.assertRaises(ValueError):
+                make_model(object_cut_priority=[entry])
+        with self.assertRaisesRegex(ValueError, "numerical"):
+            make_model(object_cut_priority=["type_id:>"])
+
+    def test_repeated_features_follow_every_position_then_release_search(self):
+        for priority in (("type_id", "pt", "pt"), ("pt", "eta", "pt")):
+            with self.subTest(priority=priority):
+                model = make_model(object_cut_priority=priority, max_rule_depth=4).fit(
+                    SIGNAL, BACKGROUND)
+                self.assertEqual(model.object_cut_priority, priority)
+                self.assertEqual({r.depth for r in model.candidate_rules_}, {1, 2, 3, 4})
+                for rule in model.candidate_rules_:
+                    self.assertEqual(object_names(rule)[:3], list(priority[:rule.depth]))
+                    np.testing.assert_array_equal(rule.predict(SIGNAL), rule.signal_selection)
+                    np.testing.assert_array_equal(rule.predict(BACKGROUND), rule.background_selection)
+                fourth_features = {object_names(r)[3] for r in model.candidate_rules_ if r.depth == 4}
+                self.assertTrue({"eta", "phi", "pt"}.issubset(fourth_features))
+
+    def test_repeated_mass_feature_can_form_a_window(self):
+        specs = (ObservableSpec("pair_mass", "continuous"),)
+        signal = np.array([80, 120, 125, 130, 170], float).reshape(-1, 1, 1)
+        background = np.array([10, 90, 110, 150, 200], float).reshape(-1, 1, 1)
+        model = make_model(specs, object_cut_priority=["pair_mass", "pair_mass"],
+                           max_rule_depth=2).fit(signal, background)
+        self.assertTrue(any(r.depth == 1 for r in model.candidate_rules_))
+        windows = [r for r in model.candidate_rules_ if r.depth == 2
+                   and {c.comparison.value for c in r.cuts} == {">", "<="}]
+        self.assertTrue(windows)
+        self.assertTrue(any(r.statistics.signal_accepted == 3
+                            and r.statistics.background_accepted == 0 for r in windows))
+
+    def test_repeated_category_advances_even_when_masks_are_unchanged(self):
+        events = (ObservableSpec("always", "boolean"),)
+        values = np.ones((4, 1))
+        for similarity in (False, True):
+            with self.subTest(similarity=similarity):
+                model = make_model(event_observables=events,
+                    object_cut_priority=["type_id", "type_id", "pt"],
+                    beam_similarity_filter=similarity).fit(
+                        SIGNAL[:, :1], BACKGROUND[:, :1],
+                        signal_event_features=values, background_event_features=values)
+                for rule in model.candidate_rules_:
+                    names = object_names(rule)
+                    self.assertEqual(names, ["type_id", "type_id", "pt"][:len(names)])
+                self.assertTrue(any(object_names(r) == ["type_id", "type_id", "pt"]
+                                    for r in model.candidate_rules_))
+                second_layer = [r for r in model.candidate_rules_ if r.depth == 2]
+                self.assertEqual({tuple(object_names(r)) for r in second_layer},
+                                 {(), ("type_id",), ("type_id", "type_id")})
+
     def test_compulsory_order_and_unrestricted_refinement_afterwards(self):
         model = make_model(object_cut_priority=["type_id", "pt"]).fit(SIGNAL, BACKGROUND)
         self.assertEqual(model.object_cut_priority, ("type_id", "pt"))
@@ -77,6 +187,18 @@ class ObjectCutPriorityTests(unittest.TestCase):
                                    (2, {spec.name for spec in SPECS})):
             root.object_priority_progress = progress
             cuts = generator._candidate_cuts(root, signal, background)
+            self.assertEqual({SPECS[c.observable_index].name for c in cuts}, expected)
+
+    def test_candidate_generator_consumes_repeated_positions_individually(self):
+        signal = SetInput.from_arrays(SIGNAL, SPECS)
+        background = SetInput.from_arrays(BACKGROUND, SPECS)
+        generator = make_generator(object_cut_priority=["pt", "eta", "pt"])
+        parent = _Candidate((), signal.slot_mask, background.slot_mask,
+                            np.ones(4, bool), np.ones(4, bool))
+        for progress, expected in ((0, {"pt"}), (1, {"eta"}), (2, {"pt"}),
+                                   (3, {spec.name for spec in SPECS})):
+            parent.object_priority_progress = progress
+            cuts = generator._candidate_cuts(parent, signal, background)
             self.assertEqual({SPECS[c.observable_index].name for c in cuts}, expected)
 
     def test_incomplete_rules_remain_candidates_when_depth_is_small(self):
@@ -180,10 +302,10 @@ class ObjectCutPriorityTests(unittest.TestCase):
                  ObservableSpec("x_valid", "boolean"), ObservableSpec("other", "continuous"))
         signal = np.array([[[np.nan, 0, 2]], [[10, 1, 3]], [[20, 1, 4]]])
         background = np.array([[[np.nan, 0, 1]], [[1, 1, 2]], [[2, 1, 3]]])
-        model = make_model(specs, object_cut_priority=["x"]).fit(signal, background)
+        model = make_model(specs, object_cut_priority=["x", "x"]).fit(signal, background)
         self.assertTrue(model.candidate_rules_)
         for rule in model.candidate_rules_:
-            self.assertEqual(object_names(rule)[0], "x")
+            self.assertEqual(object_names(rule)[:2], ["x", "x"][:rule.depth])
             self.assertFalse(rule.signal_selection[0])
             self.assertNotIn("x_valid", object_names(rule))
             self.assertIn("x_valid == True", rule.to_text())
@@ -216,11 +338,13 @@ class ObjectCutPriorityTests(unittest.TestCase):
         for value in ("type_id", b"pt", {"pt", "type_id"}, {"pt": 1}, 1):
             with self.subTest(value=value), self.assertRaises(TypeError):
                 make_model(object_cut_priority=value)
-        for value in (["pt", "pt"], ["pt", " pt "], [""], [" "], [None], [1], ["missing"]):
+        for value in ([""], [" "], [None], [1], ["missing"]):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 make_model(object_cut_priority=value)
         self.assertEqual(make_model(object_cut_priority=[" type_id ", "pt"]).object_cut_priority,
                          ("type_id", "pt"))
+        self.assertEqual(make_model(object_cut_priority=["pt", " pt "]).object_cut_priority,
+                         ("pt", "pt"))
 
     def test_direct_generator_validates_names_against_schema(self):
         signal, background = (SetInput.from_arrays(x, SPECS) for x in (SIGNAL, BACKGROUND))

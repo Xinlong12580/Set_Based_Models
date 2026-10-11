@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Set-based quantitative report, version 1",
+  "description": "EDT/ERL report structure. Optional and additional fields support runner variants; arithmetic and scientific validity require separate checks.",
+  "type": "object",
+  "required": ["format", "schema_version", "created_utc", "model", "class_semantics", "inputs", "object_observables", "event_observables", "configuration", "summary", "results"],
+  "properties": {
+    "format": {"const": "set_based_models_quantitative_report"},
+    "schema_version": {"const": 1},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "model": {"type": "string"},
+    "class_semantics": {
+      "type": "object",
+      "required": ["signal", "background", "purity_warning"],
+      "properties": {
+        "signal": {"type": "string"},
+        "background": {"type": "string"},
+        "purity_warning": {"type": "string"}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["signal", "background"],
+      "properties": {
+        "signal": {"$ref": "#/$defs/dataset"},
+        "background": {"$ref": "#/$defs/dataset"}
+      }
+    },
+    "object_observables": {"type": "array", "items": {"$ref": "#/$defs/observable"}},
+    "event_observables": {"type": "array", "items": {"$ref": "#/$defs/observable"}},
+    "feature_mode": {"enum": ["event_only", "object_only", "combined"]},
+    "object_tensor_key": {"type": ["string", "null"]},
+    "event_feature_schema": {"type": ["array", "null"], "items": {"type": "object"}},
+    "obj_feature_schema": {"type": ["array", "null"], "items": {"type": "object"}},
+    "pair_obj_feature_schema": {"type": ["array", "null"], "items": {"type": "object"}},
+    "validity_flags_are_automatic_guards": {"type": "boolean"},
+    "validity_flags_are_guard_only": {"type": "boolean"},
+    "native_event_only": {"type": "boolean"},
+    "dummy_object_input": {"type": ["object", "null"]},
+    "evaluation_note": {"type": "string"},
+    "configuration": {
+      "type": "object",
+      "properties": {
+        "reference_penalty": {"type": "number"},
+        "stricter_score_improvement": {"type": ["number", "null"]},
+        "object_cut_priority": {"type": "array", "items": {"type": "string"}},
+        "require_complete_priority": {"type": "boolean"},
+        "input_rate_mhz": {"type": "number"},
+        "max_trigger_rate_khz": {"type": ["number", "null"]},
+        "max_reference_acceptance": {"type": ["number", "null"]}
+      }
+    },
+    "summary": {"type": "object"},
+    "results": {
+      "type": "object",
+      "properties": {
+        "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+        "leaves": {"type": "array", "items": {"$ref": "#/$defs/leaf"}}
+      },
+      "oneOf": [{"required": ["rules"]}, {"required": ["leaves"]}]
+    },
+    "provenance": {"type": "object", "description": "Optional future/manual metadata; current writers do not populate this automatically."},
+    "example_metadata": {"type": "object", "description": "Synthetic-fixture annotation, not a standard runner field."}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "count": {"type": "integer", "minimum": 0},
+    "rank": {"type": "integer", "minimum": 1},
+    "fraction": {"type": "number", "minimum": 0, "maximum": 1},
+    "nullableNumber": {"type": ["number", "null"]},
+    "nullableId": {"type": ["integer", "null"], "minimum": 0},
+    "labelCounts": {"type": "object", "additionalProperties": {"$ref": "#/$defs/count"}},
+    "direction": {"enum": ["mixture-enriched", "reference-enriched", "equal-acceptance"]},
+    "dataset": {
+      "type": "object",
+      "required": ["path", "event_count", "object_shape", "stored_label_counts", "event_feature_shape", "event_feature_columns"],
+      "properties": {
+        "path": {"type": "string"},
+        "event_count": {"$ref": "#/$defs/count"},
+        "object_shape": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/count"}},
+        "stored_label_counts": {"$ref": "#/$defs/labelCounts"},
+        "event_feature_shape": {"type": ["array", "null"], "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/count"}},
+        "event_feature_columns": {"type": "array", "items": {"type": "string"}},
+        "object_tensor_key": {"type": ["string", "null"]}
+      }
+    },
+    "observable": {
+      "type": "object",
+      "required": ["name", "kind"],
+      "properties": {
+        "name": {"type": "string"},
+        "kind": {"enum": ["continuous", "ordinal", "categorical", "boolean"]},
+        "categories": {"type": ["object", "null"], "additionalProperties": {"type": "string"}},
+        "validity_column": {"type": ["string", "null"]}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["signal_accepted", "signal_total", "background_accepted", "background_total", "signal_acceptance", "background_acceptance", "acceptance_difference", "acceptance_ratio", "mixture_label_purity", "direction", "selected_signal_stored_label_counts", "selected_background_stored_label_counts"],
+      "properties": {
+        "signal_accepted": {"$ref": "#/$defs/count"},
+        "signal_total": {"$ref": "#/$defs/count"},
+        "background_accepted": {"$ref": "#/$defs/count"},
+        "background_total": {"$ref": "#/$defs/count"},
+        "signal_acceptance": {"$ref": "#/$defs/fraction"},
+        "background_acceptance": {"$ref": "#/$defs/fraction"},
+        "acceptance_difference": {"type": "number"},
+        "acceptance_ratio": {"$ref": "#/$defs/nullableNumber"},
+        "mixture_label_purity": {"$ref": "#/$defs/fraction"},
+        "direction": {"$ref": "#/$defs/direction"},
+        "selected_signal_stored_label_counts": {"$ref": "#/$defs/labelCounts"},
+        "selected_background_stored_label_counts": {"$ref": "#/$defs/labelCounts"}
+      }
+    },
+    "cut": {
+      "type": "object",
+      "required": ["scope", "observable", "observable_kind", "cut_type", "raw_text", "display_text"],
+      "properties": {
+        "scope": {"enum": ["event", "slot"]},
+        "observable": {"type": "string"},
+        "observable_kind": {"enum": ["continuous", "ordinal", "categorical", "boolean"]},
+        "cut_type": {"enum": ["threshold", "category"]},
+        "raw_text": {"type": "string"},
+        "display_text": {"type": "string"},
+        "comparison": {"enum": [">", ">=", "<", "<="]},
+        "threshold": {"type": "number"},
+        "accepted_codes": {"type": "array", "items": {"$ref": "#/$defs/count"}},
+        "validity_guard": {
+          "type": "object",
+          "required": ["scope", "observable", "required_value"],
+          "properties": {
+            "scope": {"enum": ["event", "slot"]},
+            "observable": {"type": "string"},
+            "required_value": {"const": true}
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"cut_type": {"const": "threshold"}}}, "then": {"required": ["comparison", "threshold"]}},
+        {"if": {"properties": {"cut_type": {"const": "category"}}}, "then": {"required": ["accepted_codes"]}}
+      ]
+    },
+    "prefixStep": {
+      "type": "object",
+      "required": ["depth", "scope", "cut", "display", "prefix_gini_gain", "prefix_signal_accepted", "prefix_background_accepted", "prefix_signal_acceptance", "prefix_reference_acceptance"],
+      "properties": {
+        "depth": {"$ref": "#/$defs/rank"},
+        "scope": {"enum": ["event", "slot"]},
+        "cut": {"$ref": "#/$defs/cut"},
+        "display": {"type": "string"},
+        "prefix_gini_gain": {"type": "number"},
+        "prefix_score": {"type": "number"},
+        "prefix_reference_penalty_term": {"type": "number"},
+        "prefix_signal_accepted": {"$ref": "#/$defs/count"},
+        "prefix_background_accepted": {"$ref": "#/$defs/count"},
+        "prefix_signal_acceptance": {"$ref": "#/$defs/fraction"},
+        "prefix_reference_acceptance": {"$ref": "#/$defs/fraction"}
+      }
+    },
+    "pruning": {
+      "type": "object",
+      "required": ["status", "pruned_by_rule_id"],
+      "properties": {
+        "status": {"type": "string", "description": "Current values are documented in REPORT_FORMAT.md; additive future statuses are allowed."},
+        "pruned_by_rule_id": {"$ref": "#/$defs/nullableId"},
+        "retained_witness_rule_id": {"$ref": "#/$defs/nullableId"},
+        "score_gap": {"$ref": "#/$defs/nullableNumber"},
+        "score_improvement": {"$ref": "#/$defs/nullableNumber"}
+      }
+    },
+    "rule": {
+      "type": "object",
+      "required": ["rank", "rule_id", "depth", "effective_depth_after_simplification", "gini_gain", "direction", "raw_rule", "simplified_rule", "metrics", "steps", "retained_after_similarity_pruning", "pruned_rank"],
+      "properties": {
+        "rank": {"$ref": "#/$defs/rank"},
+        "rule_id": {"$ref": "#/$defs/count"},
+        "depth": {"$ref": "#/$defs/count"},
+        "effective_depth_after_simplification": {"$ref": "#/$defs/count"},
+        "minimum_count": {"$ref": "#/$defs/rank"},
+        "score": {"type": "number"},
+        "gini_gain": {"type": "number"},
+        "reference_penalty_term": {"type": "number"},
+        "direction": {"$ref": "#/$defs/direction"},
+        "raw_rule": {"type": "string"},
+        "simplified_rule": {"type": "string"},
+        "metrics": {"$ref": "#/$defs/metrics"},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/prefixStep"}},
+        "normalized_cuts": {"type": "array", "items": {"$ref": "#/$defs/cut"}},
+        "logical_pruning_applicable": {"type": "boolean"},
+        "object_cut_priority_remaining": {"type": "array", "items": {"type": "string"}},
+        "object_cut_priority_complete": {"type": "boolean"},
+        "retained_after_final_pruning": {"type": "boolean"},
+        "retained_after_nested_pruning": {"type": "boolean"},
+        "retained_after_similarity_pruning": {"type": "boolean"},
+        "pruned_rank": {"type": ["integer", "null"], "minimum": 1},
+        "pruning": {"$ref": "#/$defs/pruning"},
+        "estimated_reference_rate_khz": {"type": "number"},
+        "passes_reference_rate_limit": {"type": "boolean"}
+      }
+    },
+    "treeStep": {
+      "type": "object",
+      "required": ["source_node_id", "branch", "scope", "cut", "selected_condition", "source_split_gain"],
+      "properties": {
+        "source_node_id": {"$ref": "#/$defs/count"},
+        "branch": {"enum": ["positive", "negative"]},
+        "scope": {"enum": ["event", "slot"]},
+        "cut": {"$ref": "#/$defs/cut"},
+        "selected_condition": {"type": "string"},
+        "source_split_gain": {"$ref": "#/$defs/nullableNumber"}
+      }
+    },
+    "leaf": {
+      "type": "object",
+      "required": ["rank", "leaf_id", "depth", "leaf_signal_fraction", "predicted_class_at_default_threshold", "metrics", "path"],
+      "properties": {
+        "rank": {"$ref": "#/$defs/rank"},
+        "leaf_id": {"$ref": "#/$defs/count"},
+        "depth": {"$ref": "#/$defs/count"},
+        "leaf_signal_fraction": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "predicted_class_at_default_threshold": {"enum": [0, 1]},
+        "metrics": {"$ref": "#/$defs/metrics"},
+        "path": {"type": "array", "items": {"$ref": "#/$defs/treeStep"}}
+      }
+    }
+  }
+}

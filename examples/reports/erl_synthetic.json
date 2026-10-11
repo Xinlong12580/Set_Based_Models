@@ -1,0 +1,189 @@
+{
+  "format": "set_based_models_quantitative_report",
+  "schema_version": 1,
+  "created_utc": "2026-10-11T00:00:00Z",
+  "model": "ERL_Gini_nested_flexible",
+  "example_metadata": {
+    "synthetic": true,
+    "source": "Hand-authored, arithmetic-checked illustration; not a discovery run or physics measurement.",
+    "stored_label_meanings": {"1": "toy ordinary component", "2": "toy injected component"}
+  },
+  "class_semantics": {
+    "signal": "Every row of the signal/mixture input, regardless of stored label.",
+    "background": "Every row of the reference/background input.",
+    "purity_warning": "mixture_label_purity is training-class purity, not injected-process purity."
+  },
+  "inputs": {
+    "signal": {
+      "path": "synthetic/anomalous.pt", "event_count": 100,
+      "object_shape": [100, 2, 2], "stored_label_counts": {"1": 80, "2": 20},
+      "event_feature_shape": null, "event_feature_columns": [], "object_tensor_key": "obj"
+    },
+    "background": {
+      "path": "synthetic/reference.pt", "event_count": 100,
+      "object_shape": [100, 2, 2], "stored_label_counts": {"1": 100},
+      "event_feature_shape": null, "event_feature_columns": [], "object_tensor_key": "obj"
+    }
+  },
+  "object_observables": [
+    {"name": "type_id", "kind": "categorical", "categories": {"0": "jets", "1": "muons", "2": "electrons", "3": "photons"}},
+    {"name": "pt", "kind": "continuous", "categories": null}
+  ],
+  "event_observables": [],
+  "obj_feature_schema": [
+    {"name": "type_id", "kind": "categorical", "categories": {"0": "jets", "1": "muons", "2": "electrons", "3": "photons"}},
+    {"name": "pt", "kind": "continuous", "units": "GeV"}
+  ],
+  "feature_mode": "object_only",
+  "object_tensor_key": "obj",
+  "validity_flags_are_automatic_guards": true,
+  "validity_flags_are_guard_only": true,
+  "evaluation_note": "Illustrative discovery-input statistics, not independent validation.",
+  "configuration": {
+    "scoring_function": "gini_gain_minus_reference_acceptance_penalty",
+    "score_formula": "gini_gain - reference_penalty * reference_acceptance",
+    "reference_penalty": 1.0,
+    "max_rule_depth": 4, "beam_width": 40, "max_candidate_rules": 300, "max_thresholds": 32,
+    "minimum_count": 1, "min_signal_efficiency": 0.01,
+    "object_features_enabled": true, "event_features_enabled": false,
+    "beam_similarity_filter": false, "final_similarity_pruning": false,
+    "object_cut_priority": ["type_id", "pt:>"],
+    "require_complete_priority": true,
+    "priority_completion_filter_stage": "before_all_final_pruning",
+    "stricter_score_improvement": 0.0,
+    "input_rate_mhz": 40.0, "max_trigger_rate_khz": null, "max_reference_acceptance": null
+  },
+  "summary": {
+    "candidate_rule_count": 3, "pruned_rule_count": 1, "pruned_rule_ids": [0],
+    "mixture_enriched_rule_count": 3, "reference_enriched_rule_count": 0,
+    "equivalent_rules_removed": 0, "rate_rules_removed": 0,
+    "stricter_rules_removed": 1, "incomplete_priority_rules_removed": 1, "similarity_rules_removed": 0
+  },
+  "results": {
+    "rules": [
+      {
+        "rank": 1, "rule_id": 0, "depth": 2, "effective_depth_after_simplification": 2,
+        "minimum_count": 1, "logical_pruning_applicable": true,
+        "object_cut_priority_remaining": [], "object_cut_priority_complete": true,
+        "score": 0.05555555555555558, "gini_gain": 0.05555555555555558,
+        "reference_penalty_term": 0.0, "direction": "mixture-enriched",
+        "raw_rule": "EXISTS same slot: type_id in {photons} AND pt > 25",
+        "simplified_rule": "EXISTS same slot: type_id in {photons} AND pt > 25",
+        "metrics": {
+          "signal_accepted": 20, "signal_total": 100, "background_accepted": 0, "background_total": 100,
+          "signal_acceptance": 0.2, "background_acceptance": 0.0,
+          "acceptance_difference": 0.2, "acceptance_ratio": null, "mixture_label_purity": 1.0,
+          "direction": "mixture-enriched",
+          "selected_signal_stored_label_counts": {"2": 20}, "selected_background_stored_label_counts": {}
+        },
+        "steps": [
+          {
+            "depth": 1, "scope": "slot", "display": "type_id in {photons}",
+            "cut": {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"},
+            "prefix_score": 0.01988660524450745, "prefix_gini_gain": 0.05988660524450745,
+            "prefix_reference_penalty_term": 0.04, "prefix_signal_accepted": 30, "prefix_background_accepted": 4,
+            "prefix_signal_acceptance": 0.3, "prefix_reference_acceptance": 0.04
+          },
+          {
+            "depth": 2, "scope": "slot", "display": "pt > 25",
+            "cut": {"scope": "slot", "observable": "pt", "observable_kind": "continuous", "cut_type": "threshold", "comparison": ">", "threshold": 25.0, "raw_text": "pt > 25", "display_text": "pt > 25"},
+            "prefix_score": 0.05555555555555558, "prefix_gini_gain": 0.05555555555555558,
+            "prefix_reference_penalty_term": 0.0, "prefix_signal_accepted": 20, "prefix_background_accepted": 0,
+            "prefix_signal_acceptance": 0.2, "prefix_reference_acceptance": 0.0
+          }
+        ],
+        "normalized_cuts": [
+          {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"},
+          {"scope": "slot", "observable": "pt", "observable_kind": "continuous", "cut_type": "threshold", "comparison": ">", "threshold": 25.0, "raw_text": "pt > 25", "display_text": "pt > 25"}
+        ],
+        "estimated_reference_rate_khz": 0.0, "passes_reference_rate_limit": true,
+        "retained_after_final_pruning": true, "retained_after_nested_pruning": true,
+        "retained_after_similarity_pruning": true, "pruned_rank": 1,
+        "pruning": {"status": "retained", "pruned_by_rule_id": null, "score_gap": null, "retained_witness_rule_id": null}
+      },
+      {
+        "rank": 2, "rule_id": 1, "depth": 3, "effective_depth_after_simplification": 2,
+        "minimum_count": 1, "logical_pruning_applicable": true,
+        "object_cut_priority_remaining": [], "object_cut_priority_complete": true,
+        "score": 0.04054054054054046, "gini_gain": 0.04054054054054046,
+        "reference_penalty_term": 0.0, "direction": "mixture-enriched",
+        "raw_rule": "EXISTS same slot: type_id in {photons} AND pt > 25 AND pt > 35",
+        "simplified_rule": "EXISTS same slot: type_id in {photons} AND pt > 35",
+        "metrics": {
+          "signal_accepted": 15, "signal_total": 100, "background_accepted": 0, "background_total": 100,
+          "signal_acceptance": 0.15, "background_acceptance": 0.0,
+          "acceptance_difference": 0.15, "acceptance_ratio": null, "mixture_label_purity": 1.0,
+          "direction": "mixture-enriched",
+          "selected_signal_stored_label_counts": {"2": 15}, "selected_background_stored_label_counts": {}
+        },
+        "steps": [
+          {
+            "depth": 1, "scope": "slot", "display": "type_id in {photons}",
+            "cut": {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"},
+            "prefix_score": 0.01988660524450745, "prefix_gini_gain": 0.05988660524450745,
+            "prefix_reference_penalty_term": 0.04, "prefix_signal_accepted": 30, "prefix_background_accepted": 4,
+            "prefix_signal_acceptance": 0.3, "prefix_reference_acceptance": 0.04
+          },
+          {
+            "depth": 2, "scope": "slot", "display": "pt > 25",
+            "cut": {"scope": "slot", "observable": "pt", "observable_kind": "continuous", "cut_type": "threshold", "comparison": ">", "threshold": 25.0, "raw_text": "pt > 25", "display_text": "pt > 25"},
+            "prefix_score": 0.05555555555555558, "prefix_gini_gain": 0.05555555555555558,
+            "prefix_reference_penalty_term": 0.0, "prefix_signal_accepted": 20, "prefix_background_accepted": 0,
+            "prefix_signal_acceptance": 0.2, "prefix_reference_acceptance": 0.0
+          },
+          {
+            "depth": 3, "scope": "slot", "display": "pt > 35",
+            "cut": {"scope": "slot", "observable": "pt", "observable_kind": "continuous", "cut_type": "threshold", "comparison": ">", "threshold": 35.0, "raw_text": "pt > 35", "display_text": "pt > 35"},
+            "prefix_score": 0.04054054054054046, "prefix_gini_gain": 0.04054054054054046,
+            "prefix_reference_penalty_term": 0.0, "prefix_signal_accepted": 15, "prefix_background_accepted": 0,
+            "prefix_signal_acceptance": 0.15, "prefix_reference_acceptance": 0.0
+          }
+        ],
+        "normalized_cuts": [
+          {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"},
+          {"scope": "slot", "observable": "pt", "observable_kind": "continuous", "cut_type": "threshold", "comparison": ">", "threshold": 35.0, "raw_text": "pt > 35", "display_text": "pt > 35"}
+        ],
+        "estimated_reference_rate_khz": 0.0, "passes_reference_rate_limit": true,
+        "retained_after_final_pruning": false, "retained_after_nested_pruning": false,
+        "retained_after_similarity_pruning": false, "pruned_rank": null,
+        "pruning": {
+          "status": "stricter_score_improvement", "pruned_by_rule_id": 0,
+          "retained_witness_rule_id": 0, "score_gap": 0.01501501501501512,
+          "score_improvement": -0.01501501501501512
+        }
+      },
+      {
+        "rank": 3, "rule_id": 2, "depth": 1, "effective_depth_after_simplification": 1,
+        "minimum_count": 1, "logical_pruning_applicable": true,
+        "object_cut_priority_remaining": ["pt:>"], "object_cut_priority_complete": false,
+        "score": 0.01988660524450745, "gini_gain": 0.05988660524450745,
+        "reference_penalty_term": 0.04, "direction": "mixture-enriched",
+        "raw_rule": "EXISTS same slot: type_id in {photons}",
+        "simplified_rule": "EXISTS same slot: type_id in {photons}",
+        "metrics": {
+          "signal_accepted": 30, "signal_total": 100, "background_accepted": 4, "background_total": 100,
+          "signal_acceptance": 0.3, "background_acceptance": 0.04,
+          "acceptance_difference": 0.26, "acceptance_ratio": 7.5, "mixture_label_purity": 0.8823529411764706,
+          "direction": "mixture-enriched",
+          "selected_signal_stored_label_counts": {"1": 10, "2": 20}, "selected_background_stored_label_counts": {"1": 4}
+        },
+        "steps": [
+          {
+            "depth": 1, "scope": "slot", "display": "type_id in {photons}",
+            "cut": {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"},
+            "prefix_score": 0.01988660524450745, "prefix_gini_gain": 0.05988660524450745,
+            "prefix_reference_penalty_term": 0.04, "prefix_signal_accepted": 30, "prefix_background_accepted": 4,
+            "prefix_signal_acceptance": 0.3, "prefix_reference_acceptance": 0.04
+          }
+        ],
+        "normalized_cuts": [
+          {"scope": "slot", "observable": "type_id", "observable_kind": "categorical", "cut_type": "category", "accepted_codes": [3], "raw_text": "type_id in {photons}", "display_text": "type_id in {photons}"}
+        ],
+        "estimated_reference_rate_khz": 1600.0, "passes_reference_rate_limit": true,
+        "retained_after_final_pruning": false, "retained_after_nested_pruning": false,
+        "retained_after_similarity_pruning": false, "pruned_rank": null,
+        "pruning": {"status": "incomplete_object_priority", "pruned_by_rule_id": null, "score_gap": null, "retained_witness_rule_id": null}
+      }
+    ]
+  }
+}

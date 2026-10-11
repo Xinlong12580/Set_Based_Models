@@ -1,7 +1,7 @@
 ---
 title: "Interpretable Rule Discovery for Anomaly-Selected Events"
 subtitle: "A practical introduction to ERL and our trigger-study workflow"
-date: "Implementation snapshot: 7 October 2026"
+date: "Implementation snapshot: 11 October 2026"
 lang: en
 papersize: a4
 fontsize: 11pt
@@ -83,14 +83,16 @@ momentum imbalance, which may arise from invisible particles or measurement erro
 
 | Input mode | What ERL can ask |
 | --- | --- |
-| Objects only | Does an object satisfy these properties? |
+| Objects only | Does an object, or optionally an object pair, satisfy these properties? |
 | Events only | Does this event summary satisfy these conditions? |
 | Both | Do object and event requirements hold together? |
 
 Technically, an input tensor is a numeric array. Object inputs have shape
 **events × slots × properties**; event inputs have shape **events × variables**.
-A slot is storage for one object. Unused slots are padded; a presence mask is
-needed to exclude them. Our runner constructs it from positive transverse momentum.
+A slot stores one object, or one pair when the separate pair tensor is selected.
+Unused slots are padded; a presence mask excludes them. Our runner constructs
+this mask from positive transverse momentum for single objects and reads the
+saved pair-presence mask for pairs.
 Event-only ERL works without a dummy object tensor.
 
 Each feature also has a schema: its name, kind, and, where provided, units and
@@ -110,10 +112,15 @@ The word *existential* means that at least one matching object must exist.
 The core can instead require at least `k` objects matching the entire condition;
 our flexible runner currently uses one.
 
-For a photon-plus-muon requirement, event counts are clearer: require at least
-one photon and at least one muon. Asking a single object to be both types is
-impossible. Leading and subleading event features can also express different
-thresholds for the first and second objects.
+For a photon-plus-muon requirement, event counts can require at least one of
+each. Alternatively, pair inputs can require a photon member and a muon member
+with conditions on their individual and shared properties. Asking a single
+object to be both types is impossible. Leading and subleading event features
+can also express different thresholds for the first and second objects.
+
+All pair conditions refer to **the same pair**, which contains two distinct
+objects. Different pair slots may share a member: two matching pairs do not
+necessarily mean four distinct particles.
 
 ## Undefined is not the same as zero
 
@@ -146,20 +153,19 @@ These are illustrative conditions, not results or recommended thresholds.
 Candidates retained from earlier levels can also appear in the final pool:
 the model is allowed to return a useful one-condition rule.
 
-For numeric features, candidate thresholds come from the observed data and both
-upper and lower cuts are considered. For categories, the search tests individual
-categories. Every extension is evaluated against the two original input samples.
-In combined mode, an extension can be an object condition or an event condition.
+Numeric thresholds come from the data, with upper and lower cuts considered;
+category cuts test individual categories. Each extension is scored against the
+original input samples. Combined mode can add object or event conditions.
 
 ## The main search controls
 
 | Control | Plain-language meaning |
 | --- | --- |
-| Maximum depth | Maximum number of explicit conditions in a rule |
-| Beam width | Number of competing partial rules carried to the next level |
-| Threshold budget | Number of numeric cut positions tried per feature and prefix |
-| Candidate cap | Maximum number of rules retained in the final candidate pool |
-| Minimum mixture acceptance | Reject rules accepting too little of the anomalous input |
+| Maximum depth | Explicit conditions allowed per rule |
+| Beam width | Prefixes kept for the next level |
+| Threshold budget | Numeric thresholds per feature/prefix |
+| Candidate cap | Rules saved in the candidate pool |
+| Minimum mixture acceptance | Smallest accepted mixture fraction |
 
 A wider beam can preserve an initially modest condition that becomes useful
 after another cut. It costs more computation and is still not an exhaustive
@@ -168,18 +174,26 @@ at an earlier level. With many features, intermediate competition matters.
 
 ## Optional object-feature priority
 
-A compulsory priority such as `type_id, pt` makes the next object cut use type
-first, then transverse momentum, before other object properties become eligible.
-This can organize the search around recognizable particle categories.
+A priority such as `type_id, pt` requires a type cut, then a momentum cut, before
+other object features become eligible. Event cuts remain free and do not advance
+this object-cut sequence.
 
-The order restricts **which object feature can be cut next**, not the length of
-the returned rule. A type-only rule remains eligible. Event cuts are unrestricted
-and can interleave with object cuts. Priority does not guarantee that every
-particle type survives the beam or that the best rule is found.
+Entries can repeat and can specify a numerical comparison direction. For
+example, `type_id, pt:>, pt:<=` asks for type, then a lower momentum bound,
+then an upper momentum bound. Thresholds are learned from data, with each bound
+taking a separate search step.
 
-The model also tracks which objects survive each partial rule. Two conditions
-accepting the same events can retain different objects and therefore support
-different next cuts; they must not automatically be treated as identical states.
+Short rules remain eligible by default. An optional completion requirement
+retains only rules making **every listed cut**, in order and with any specified
+directions. Incomplete prefixes are still searched and reported; if none reaches
+completion, no rule is retained. Neither option guarantees the best rule or
+retention of every particle type.
+
+The search also tracks surviving objects: equal event selections may leave
+different objects available for the next cut. This state is stored as compact
+bits and unused selections are discarded to reduce memory. Large pair inputs
+and wide searches can still require substantial RAM. `--progress` displays
+search counters and elapsed time, not a guaranteed completion time.
 
 \newpage
 
@@ -258,6 +272,9 @@ matter because they affect future extensions. Final similarity compares accepted
 events. A higher similarity threshold makes pruning less aggressive. Beam and
 final similarity can be enabled independently; early filtering can remove a
 promising search path, whereas final filtering only edits the finished list.
+Similarity is about overlap, not physical equivalence: it may remove a useful
+refinement that accepts many of the same events. Raising its thresholds preserves
+more overlapping alternatives.
 
 ## Logical pruning: does extra complexity earn its place?
 
@@ -272,6 +289,13 @@ The stricter rule implies the simple one when the conditions refer to the same
 object and the object-count requirement is unchanged. It survives only if its
 score improves by **more than** the configured improvement threshold. This
 handles both tighter numeric bounds and additional AND conditions.
+
+The improvement threshold can be positive, zero, or negative. Positive values
+require a meaningful score gain; zero requires any strictly positive gain.
+A negative value permits a limited score loss: `-0.01`, for example, lets a
+stricter rule survive this check when its loss is less than 0.01 against every
+applicable retained looser rule. This can preserve narrower descriptions, but
+does not disable similarity or rate filtering or change score-based ranking.
 
 Equivalent rules are merged. Repeated bounds can be simplified: `pt > 50 AND
 pt > 40` is effectively `pt > 50`. Original steps remain available in the report.
@@ -290,8 +314,9 @@ $$\text{maximum acceptance}=\frac{\text{allowed output rate}}{\text{input rate}}
 For example, 40 kHz at 40 MHz means at most 0.1% reference acceptance.
 The runner converts the units; the core receives only that fraction.
 
-Final selection applies acceptance eligibility first, equivalence and logical
-pruning next, and optional similarity last. An over-budget simple rule cannot
+Final selection first checks priority completion when requested, then acceptance
+eligibility, equivalence and logical pruning, and optional similarity last.
+An incomplete or over-budget simple rule cannot
 discard a rate-eligible extension. The limit applies **per rule**, not to the
 combined trigger menu, and currently uses training acceptance without an
 uncertainty margin. Adding OR paths requires a separate combined-rate evaluation.
@@ -306,7 +331,8 @@ another anomaly detector.
 | Reusable ERL functionality | Choices made around it |
 | --- | --- |
 | Read arrays and feature schemas | Convert raw Parquet into PT datasets |
-| Search object and/or event conditions | Choose particle collections and summaries |
+| Search object/pair and/or event conditions | Choose particle collections and summaries |
+| Enforce cut order, directions and optional completion | Choose a search structure and budgets |
 | Evaluate a supplied scoring function | Supply reference-penalized Gini |
 | Apply configured built-in pruning | Choose similarity and improvement settings |
 | Apply a generic acceptance ceiling | Translate a trigger budget into that ceiling |
@@ -328,6 +354,14 @@ type: **22 slots and 20 columns**. The columns include transverse momentum,
 direction, type, isolation, impact parameter, jet mass, constituent counts,
 charged fraction, energy ratio and charge, plus extra-property validity flags.
 Not every property applies to every object type.
+
+An optional, separate pair tensor has **231 slots and 68 columns**. It contains
+the properties of both members, plus shared quantities such as momentum balance,
+invariant mass, angular separation and charge relationships, with validity
+flags. It is built from the same capped object collections. The runner selects
+pairs instead of single-object slots; event summaries can still be used alongside
+them. Pair construction and search are more expensive because the number of
+possible pairs grows approximately quadratically with the object count.
 
 The default event tensor contains **193 columns, including validity flags**.
 Its main families are:
@@ -361,8 +395,8 @@ exist. It illustrates an event-only run; it is not a universal recommended tune.
 
 ```bash
 python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/ggHgammagamma_mixture/anomalous.pt \
-  --background data/ggHgammagamma_mixture/reference.pt \
+  --signal data/example_mixture/anomalous.pt \
+  --background data/example_mixture/reference.pt \
   --event-only \
   --reference-penalty 1 \
   --stricter-score-improvement 0.001 \
@@ -372,18 +406,25 @@ python casual_tests/run_ERL_Gini_nested.py \
 
 Remove `--event-only` to use both tensors; replace it with `--object-only`
 to use only objects. With objects enabled, `--basic-object-features` restricts
-them to momentum, direction and type. `--object-cut-priority type_id pt` enables
-ordered first use. Beam and final similarity require their explicit enable
-flags; they are off in this example. Existing reports require
+them to momentum, direction and type. Add `--pair-tensor` to select saved pair
+inputs instead of single-object inputs. `--object-cut-priority type_id pt`
+enables ordered object cuts; pair inputs use member names such as `type_id_1`
+and `type_id_2`. Add `--require-complete-priority` to require the entire list in
+retained rules. Quote directed entries, such as `'pt:>'`, to avoid shell
+redirection. `--progress` displays search activity on the terminal.
+Beam and final similarity require their explicit enable flags; they are off
+in this example. Existing reports require
 `--overwrite-report` before replacement.
 
 ## Know the runner defaults
 
-The flexible runner searches up to three explicit cuts, carries a beam of 50,
-retains up to 500 candidates, and tries at most 32 numeric thresholds per feature
+The flexible runner searches up to four explicit cuts, carries a beam of 40,
+retains up to 300 candidates, and tries at most 32 numeric thresholds per feature
 and prefix. It requires at least 1% mixture acceptance. Both tensors are enabled
 by default, reference penalty is one, and logical pruning requires a strictly
-positive improvement by default. No rate ceiling is enabled by default.
+positive improvement by default. Priority, its completion requirement, progress,
+and a rate ceiling are off by default. Single-object inputs are used unless
+pairs are requested.
 
 Search depth, beam width and candidate cap are constructor settings in this
 script, not current CLI options. The core has configurable parameters and
@@ -399,6 +440,10 @@ Read a rule alongside its mixture and reference acceptance, absolute counts,
 complexity, and pruning status. A high score alone is not a physics explanation.
 Global rank orders the full capped candidate pool by score; retained rank orders
 the surviving subset. Neither is a ranking by true signal purity.
+The report preserves ordered cut histories, priority progress and completion
+status. Incomplete rules rejected by the completion option remain visible with
+the pruning reason `incomplete_object_priority`. Candidates lost during beam
+search are not part of this saved pool.
 
 Process labels are used only for diagnostics. A reported fraction of accepted
 events belonging to the anomalous input must not be confused with the fraction
@@ -429,7 +474,8 @@ physically unstable direction despite passing the finite-value guard.
 **Padding protection is explicit, not universal.** Linked measurement guards
 exclude invalid placeholders. The current object eta/phi columns have no
 dedicated validity flags; missing values filled with zero remain an interpretation
-limitation. Producer-availability counts can also become reconstruction proxies.
+limitation; pair coordinates have their own guards. Producer-availability counts
+can also become reconstruction proxies.
 
 **Zero observed reference events does not mean zero rate.** With 5,000 unweighted
 reference events, one accepted event corresponds to 0.02% acceptance, or 8 kHz
@@ -462,6 +508,5 @@ behavior is implemented under `src/set_based_models/rule_list/`; conversion is
 under `raw_event_conversion/`; study scoring and reporting are under
 `casual_tests/`.
 
-This report was checked against the current working implementation. Its scoring
-example is hypothetical and was verified with the actual scorer. No production
-conversion or rule-discovery run was performed to prepare it.
+The worked scoring example is hypothetical. Search settings and rate estimates
+should be validated for the intended datasets and use case.

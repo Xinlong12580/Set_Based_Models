@@ -1,11 +1,13 @@
-"""Penalized-Gini ERL using both saved tensors, or either tensor alone.
+"""Penalized-Gini ERL using saved events and single particles or particle pairs.
 
 Score/pruning defaults follow run_ERL_Gini_nested_event_only.py. Logical-subset pruning
 supports event, object, and mixed rules, preserving same-slot/count semantics.
 Schema-declared validity flags automatically guard object and event cuts.
+--pair-tensor selects pair_obj instead of obj; --object-only disables events.
 """
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 import json
 import math
 from pathlib import Path
@@ -19,14 +21,17 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from set_based_models import EventCut, ExistentialRuleList, ObservableSpec, SetInput
+from set_based_models.rule_list.generation import _object_priority_progress
 from casual_tests import _event_only_reporting as event_reporting
 from casual_tests import _quantitative_reporting as reporting
-from casual_tests.run_ERL_Gini_nested_event_only import _positive_float
+from casual_tests._erl_progress import SearchProgress
+from casual_tests.run_ERL_Gini_nested_event_only import _finite_float, _positive_float
 from casual_tests.run_ERL_Gini_penalized_event_only import (
     ReferencePenalizedGini, _nonnegative_float, _similarity_threshold,
 )
 
 BASIC_OBJECT_COLUMNS = ("pt", "eta", "phi", "type_id")
+BASIC_PAIR_COLUMNS = tuple(f"{name}_{member}" for member in (1, 2) for name in BASIC_OBJECT_COLUMNS)
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,7 @@ class Dataset(reporting.LoadedDataset):
     event_observables: tuple
     object_schema: list | None
     feature_schema: list | None
+    object_tensor_key: str | None
 
 
 def _schema(raw, prefix, width, path):
@@ -45,10 +51,13 @@ def _schema(raw, prefix, width, path):
     columns = tuple(name.strip() for name in columns)
     if len(set(columns)) != len(columns):
         raise ValueError(f"Duplicate {prefix}_columns in {path}.")
-    key = "obj_feature_schema" if prefix == "obj" else "event_feature_schema"
+    key = {"obj": "obj_feature_schema", "pair_obj": "pair_obj_feature_schema",
+           "event_feature": "event_feature_schema"}[prefix]
     schema = raw.get(key)
     if schema is None:
-        if prefix == "obj":
+        if prefix == "pair_obj":
+            raise ValueError(f"{key} is required for particle pairs in {path}.")
+        elif prefix == "obj":
             if list(columns) != reporting.OBJECT_COLUMNS:
                 raise ValueError(f"{key} is required for non-legacy object columns in {path}.")
             specs = reporting.OBSERVABLES
@@ -78,12 +87,15 @@ def _tensor(raw, key, ndim, rows, path):
     return value.detach().to(dtype=torch.float64).numpy()
 
 
-def load_dataset(path, *, use_objects=True, use_events=True, basic_object_features=False):
+def load_dataset(path, *, use_objects=True, use_events=True, basic_object_features=False,
+                 use_pairs=False):
     """Validate only enabled modalities; never replace NaNs in active features."""
     if not use_objects and not use_events:
         raise ValueError("Enable at least one of object or event features.")
     if basic_object_features and not use_objects:
         raise ValueError("Basic object features require object inputs to be enabled.")
+    if use_pairs and not use_objects:
+        raise ValueError("Particle pairs require object inputs to be enabled.")
     path = Path(path).expanduser().resolve()
     raw = torch.load(path, map_location="cpu", weights_only=True)
     labels = raw.get("label") if isinstance(raw, dict) else None
@@ -95,22 +107,46 @@ def load_dataset(path, *, use_objects=True, use_events=True, basic_object_featur
     objects = mask = events = None
     object_specs = event_specs = event_columns = ()
     object_schema = event_schema = None
+    object_key = ("pair_obj" if use_pairs else "obj") if use_objects else None
     if use_objects:
-        objects = _tensor(raw, "obj", 3, len(labels), path)
-        columns, object_specs, object_schema = _schema(raw, "obj", objects.shape[2], path)
+        objects = _tensor(raw, object_key, 3, len(labels), path)
+        columns, object_specs, object_schema = _schema(raw, object_key, objects.shape[2], path)
+        if use_pairs:
+            saved_mask = raw.get("pair_slot_mask")
+            if (not isinstance(saved_mask, torch.Tensor) or saved_mask.dtype != torch.bool
+                    or saved_mask.layout != torch.strided or saved_mask.shape != objects.shape[:2]):
+                raise ValueError(f"pair_slot_mask must be a Boolean tensor with shape {objects.shape[:2]} in {path}.")
+            mask = saved_mask.numpy()
+            for name in ("pt_1", "pt_2"):
+                if name not in columns:
+                    raise ValueError(f"pair_obj_columns must contain {name} in {path}.")
+                pt = objects[..., columns.index(name)][mask]
+                if np.any(~np.isfinite(pt) | (pt <= 0)):
+                    raise ValueError(f"Active particle pairs require finite positive {name} in {path}.")
         if basic_object_features:
-            missing = [name for name in BASIC_OBJECT_COLUMNS if name not in columns]
+            selected = BASIC_PAIR_COLUMNS if use_pairs else BASIC_OBJECT_COLUMNS
+            missing = [name for name in selected if name not in columns]
             if missing:
                 raise ValueError(f"Basic object features require columns {missing} in {path}.")
-            indices = [columns.index(name) for name in BASIC_OBJECT_COLUMNS]
+            indices = [columns.index(name) for name in selected]
+            # Keep guards required by selected measurements, but not unrelated extras.
+            for index in tuple(indices):
+                guard = object_specs[index].validity_column
+                if guard is not None:
+                    if guard not in columns:
+                        raise ValueError(f"Missing validity column {guard!r} in {path}.")
+                    guard_index = columns.index(guard)
+                    if guard_index not in indices:
+                        indices.append(guard_index)
             objects = objects[..., indices]
             object_specs = tuple(object_specs[index] for index in indices)
             if object_schema is not None:
                 object_schema = [object_schema[index] for index in indices]
-            columns = BASIC_OBJECT_COLUMNS
-        if "pt" not in columns:
-            raise ValueError(f"obj_columns must contain pt to identify padded slots in {path}.")
-        mask = objects[..., columns.index("pt")] > 0
+            columns = tuple(columns[index] for index in indices)
+        if not use_pairs:
+            if "pt" not in columns:
+                raise ValueError(f"obj_columns must contain pt to identify padded slots in {path}.")
+            mask = objects[..., columns.index("pt")] > 0
     if use_events:
         events = _tensor(raw, "event_features", 2, len(labels), path)
         event_columns, event_specs, event_schema = _schema(
@@ -125,14 +161,15 @@ def load_dataset(path, *, use_objects=True, use_events=True, basic_object_featur
             raise ValueError(f"Multiplicity {name!r} must be nonnegative in {path}.")
     return Dataset(path, validated.X, validated.slot_mask, labels.numpy(),
                    validated.event_features, event_columns,
-                   object_specs, event_specs, object_schema, event_schema)
+                   object_specs, event_specs, object_schema, event_schema, object_key)
 
 
 def _load_pair(parser, args, mode):
     try:
         signal, background = (load_dataset(path, use_objects=not args.no_object_features,
                                            use_events=not args.no_event_features,
-                                           basic_object_features=args.basic_object_features)
+                                           basic_object_features=args.basic_object_features,
+                                           use_pairs=args.pair_tensor)
                               for path in (args.signal, args.background))
         if signal.path.samefile(background.path):
             raise ValueError("Signal and background inputs must be different files.")
@@ -145,6 +182,7 @@ def _load_pair(parser, args, mode):
         requested = (args.report.expanduser().absolute() if args.report is not None else
                      Path.cwd() / "reports" /
                      f"ERL_Gini_nested_flexible_{signal.path.parent.name}_{signal.path.stem}"
+                     f"{'_pairs' if args.pair_tensor else ''}"
                      f"{'_basic_objects' if args.basic_object_features else ''}_{mode}.txt")
         target = requested.parent.resolve() / requested.name
         if target.is_symlink():
@@ -164,16 +202,16 @@ def _rule_records(model, signal, background, result, args, max_acceptance):
     ranks = {rule.rule_id: rank for rank, rule in enumerate(result.retained, 1)}
     records = []
     for rank, rule in enumerate(model.candidate_rules_, 1):
-        used_objects = {model.observables[cut.observable_index].name for cut in rule.cuts
-                        if not isinstance(cut, EventCut)}
-        remaining_priority = [name for name in model.object_cut_priority if name not in used_objects]
+        priority_progress = _object_priority_progress(rule.cuts, model.object_cut_priority, model.observables)
+        remaining_priority = list(model.object_cut_priority[priority_progress:])
         normalized = result.normalized_cuts[rule.rule_id]
         parts = [reporting._predicate_text(cut, model.event_observables, include_scope=True)
                  for cut in normalized if isinstance(cut, EventCut)]
         slots = [cut for cut in normalized if not isinstance(cut, EventCut)]
         if slots:
-            prefix = ("EXISTS same slot" if rule.minimum_count == 1
-                      else f"COUNT >= {rule.minimum_count} matching slots")
+            slot_name = "pair" if args.pair_tensor else "slot"
+            prefix = (f"EXISTS same {slot_name}" if rule.minimum_count == 1
+                      else f"COUNT >= {rule.minimum_count} matching {slot_name}s")
             predicates = " AND ".join(reporting._predicate_text(cut, model.observables)
                                       for cut in slots)
             parts.append(f"{prefix}: {predicates}")
@@ -203,6 +241,7 @@ def _rule_records(model, signal, background, result, args, max_acceptance):
             "effective_depth_after_simplification": effective_depth,
             "logical_pruning_applicable": True, "minimum_count": rule.minimum_count,
             "object_cut_priority_remaining": remaining_priority,
+            "object_cut_priority_complete": not remaining_priority,
             "score": rule.generation_score, "gini_gain": steps[-1]["prefix_gini_gain"],
             "reference_penalty_term": steps[-1]["prefix_reference_penalty_term"],
             "direction": metrics["direction"], "metrics": metrics, "steps": steps,
@@ -251,18 +290,33 @@ def _print_rules(records, limit):
 def main(argv=None):
     parser = event_reporting._parser(__doc__, model="ERL")
     parser.add_argument("--no-object-features", "--event-only", action="store_true",
-                        help="Ignore obj and its schema; use native event-only ERL.")
+                        help="Ignore object tensors and their schemas; use native event-only ERL.")
     parser.add_argument("--no-event-features", "--object-only", action="store_true",
                         help="Ignore event_features and its schema; use object-only ERL.")
     parser.add_argument("--basic-object-features", action="store_true",
-                        help="Use only pt, eta, phi, type_id from obj; event inputs are unchanged.")
-    parser.add_argument("--object-cut-priority", nargs="+", default=[], metavar="FEATURE",
-                        help="Compulsory first-use order of object features, e.g. type_id pt. "
+                        help="Use only pt, eta, phi, type_id per member, plus required guards; "
+                             "supports single particles or pairs; event inputs are unchanged.")
+    parser.add_argument("--pair-tensor", "--use-pair-tensor", action="store_true",
+                        help="Use pair_obj, its schema and pair_slot_mask instead of obj. "
+                             "Requires conversion with --with-pair-tensor; events remain enabled "
+                             "unless --object-only is supplied.")
+    parser.add_argument("--progress", action="store_true",
+                        help="Show depth, beam-parent/cut counts and elapsed time on stderr; "
+                             "off by default, with no whole-fit percentage or ETA.")
+    parser.add_argument("--object-cut-priority", nargs="+", default=[], metavar="FEATURE[:DIRECTION]",
+                        help="Compulsory object-cut sequence, e.g. type_id pt "
+                             "or type_id_1 type_id_2 pair_mass pair_mass for pairs. "
+                             "Optional directions are >, >=, <, <=; quote entries such as 'pair_mass:>'. "
+                             "Repeated names require another cut. "
                              "Incomplete rules remain eligible; event cuts are unrestricted.")
+    parser.add_argument("--require-complete-priority", action="store_true",
+                        help="Retain only candidates completing the object-cut priority list. "
+                             "Applied before all final pruning; beam search still uses incomplete prefixes.")
     parser.add_argument("--reference-penalty", type=_nonnegative_float, default=1.0,
                         help="Lambda in Gini - lambda * reference acceptance (default: 1; 0 = pure Gini).")
-    parser.add_argument("--stricter-score-improvement", type=_nonnegative_float, default=0.0,
-                        help="Required strict score improvement for event/object/mixed rules (default: 0).")
+    parser.add_argument("--stricter-score-improvement", type=_finite_float, default=0.0,
+                        help="Require score(stricter)-score(looser) > this value; "
+                             "negative values permit bounded score loss (default: 0).")
     parser.add_argument("--max-trigger-rate-khz", type=_nonnegative_float, default=None,
                         help="Optional per-rule rate budget, applied before logical pruning.")
     parser.add_argument("--input-rate-mhz", type=_positive_float, default=40.0,
@@ -284,6 +338,8 @@ def main(argv=None):
         parser.error("Cannot disable both object and event features.")
     if args.basic_object_features and args.no_object_features:
         parser.error("--basic-object-features cannot be combined with --event-only/--no-object-features.")
+    if args.pair_tensor and args.no_object_features:
+        parser.error("--pair-tensor cannot be combined with --event-only/--no-object-features.")
     if args.object_cut_priority and args.no_object_features:
         parser.error("--object-cut-priority requires object features; cannot use --event-only.")
     mode = ("event_only" if args.no_object_features else
@@ -297,7 +353,7 @@ def main(argv=None):
     try:
         model = ExistentialRuleList(
             signal.object_observables, event_observables=signal.event_observables,
-            max_rule_depth=3, beam_width=50, max_candidate_rules=500, max_thresholds=32,
+            max_rule_depth=4, beam_width=40, max_candidate_rules=300, max_thresholds=32,
             minimum_count=1, min_signal_efficiency=0.01,
             allow_validity_cuts=args.allow_validity_cuts,
             object_cut_priority=args.object_cut_priority,
@@ -308,14 +364,17 @@ def main(argv=None):
         )
     except (TypeError, ValueError) as error:
         parser.error(str(error))
-    model.fit(
-        None if args.no_object_features else signal.objects,
-        None if args.no_object_features else background.objects,
-        signal_slot_mask=None if args.no_object_features else signal.slot_mask,
-        background_slot_mask=None if args.no_object_features else background.slot_mask,
-        signal_event_features=signal.event_features, background_event_features=background.event_features,
-    )
+    with (SearchProgress() if args.progress else nullcontext()) as progress:
+        model.fit(
+            None if args.no_object_features else signal.objects,
+            None if args.no_object_features else background.objects,
+            signal_slot_mask=None if args.no_object_features else signal.slot_mask,
+            background_slot_mask=None if args.no_object_features else background.slot_mask,
+            signal_event_features=signal.event_features, background_event_features=background.event_features,
+            progress_callback=progress,
+        )
     model.prune_candidates(
+        require_complete_priority=args.require_complete_priority,
         stricter_score_improvement=args.stricter_score_improvement,
         max_reference_acceptance=None if max_acceptance is None else min(1.0, max_acceptance),
         similarity_filter=args.final_similarity_filter,
@@ -326,8 +385,11 @@ def main(argv=None):
     report = reporting._base_report("ERL_Gini_nested_flexible", signal, background, model.event_observables)
     report.update({
         "feature_mode": mode, "native_event_only": mode == "event_only", "dummy_object_input": None,
+        "object_tensor_key": signal.object_tensor_key,
         "object_observables": [reporting._observable_record(spec) for spec in model.observables],
-        "obj_feature_schema": signal.object_schema, "event_feature_schema": signal.feature_schema,
+        "obj_feature_schema": signal.object_schema if signal.object_tensor_key == "obj" else None,
+        "pair_obj_feature_schema": signal.object_schema if args.pair_tensor else None,
+        "event_feature_schema": signal.feature_schema,
         "native_event_info_used": False, "validity_flags_are_automatic_guards": True,
         "validity_flags_are_guard_only": not model.allow_validity_cuts,
         "validity_guard_policy": "explicit_schema_metadata; invalid values never satisfy associated cuts",
@@ -352,7 +414,8 @@ def main(argv=None):
             "rate_filter_stage": "before_equivalence_merging_and_stricter_pruning",
             "rate_limit_scope": "each_rule_not_combined_OR",
             "rate_estimation": "training_reference_acceptance_times_input_rate_no_confidence_bound",
-            "pruning_policy": "rate_then_scoped_equivalence_and_stricter_filter_then_optional_similarity",
+            "pruning_policy": ("priority_completion_then_" if args.require_complete_priority else "")
+                              + "rate_then_scoped_equivalence_and_stricter_filter_then_optional_similarity",
             "final_similarity_pruning": args.final_similarity_filter,
             "max_rule_depth": model.max_rule_depth, "beam_width": model.beam_width,
             "max_candidate_rules": model.max_candidate_rules, "max_thresholds": model.max_thresholds,
@@ -363,10 +426,16 @@ def main(argv=None):
             "final_signal_similarity_threshold": args.signal_similarity_threshold,
             "final_background_similarity_threshold": args.background_similarity_threshold,
             "object_features_enabled": not args.no_object_features,
+            "progress": args.progress, "progress_output": "stderr" if args.progress else None,
+            "object_tensor_key": signal.object_tensor_key, "pair_tensor": args.pair_tensor,
             "basic_object_features": args.basic_object_features,
             "object_cut_priority": list(model.object_cut_priority),
-            "object_cut_priority_policy": "next_unused_object_feature_only; "
-                                          "event_cuts_unrestricted; incomplete_rules_eligible",
+            "require_complete_priority": args.require_complete_priority,
+            "priority_completion_filter_stage": "before_all_final_pruning" if args.require_complete_priority else None,
+            "object_cut_priority_policy": "next_listed_object_feature_only; repeated_entries_require_cuts; "
+                                          "optional_comparison_direction; event_cuts_unrestricted; "
+                                          + ("incomplete_prefixes_searched; complete_rules_required_for_retention"
+                                             if args.require_complete_priority else "incomplete_rules_eligible"),
             "selected_object_columns": [spec.name for spec in model.observables],
             "allow_validity_cuts": model.allow_validity_cuts,
             "object_validity_guards": {spec.name: spec.validity_column for spec in model.observables
@@ -374,7 +443,9 @@ def main(argv=None):
             "event_validity_guards": {spec.name: spec.validity_column for spec in model.event_observables
                                       if spec.validity_column is not None},
             "event_features_enabled": not args.no_event_features,
-            "object_slot_mask_policy": "named pt column > 0; schema-declared per-feature validity guards",
+            "object_slot_mask_policy": ("saved Boolean pair_slot_mask; both members have positive finite PT; "
+                                        "schema-declared per-feature validity guards" if args.pair_tensor else
+                                        "named pt column > 0; schema-declared per-feature validity guards"),
         },
         "summary": {
             "candidate_rule_count": len(records), "pruned_rule_count": len(model.selected_rules_),
@@ -385,18 +456,31 @@ def main(argv=None):
             "equivalent_rules_removed": sum(r["pruning"]["status"] == "equivalent_rule" for r in records),
             "rate_rules_removed": sum(r["pruning"]["status"] == "reference_rate_limit" for r in records),
             "stricter_rules_removed": sum(r["pruning"]["status"] == "stricter_score_improvement" for r in records),
+            "incomplete_priority_rules_removed": sum(r["pruning"]["status"] == "incomplete_object_priority" for r in records),
             "similarity_rules_removed": sum(r["pruning"]["status"] == "similarity" for r in records),
         },
         "results": {"rules": records},
     })
+    for record in report["inputs"].values():
+        record["object_tensor_key"] = signal.object_tensor_key
     reporting._print_header(report, target)
     print(f"FEATURE MODE: {mode}; object columns={len(model.observables)}; "
           f"event columns={len(model.event_observables)}; no dummy object tensor.")
+    if args.pair_tensor:
+        print("OBJECT INPUT: pair_obj; presence from pair_slot_mask; each slot is two distinct retained particles.")
+        print("PAIR ORDER: type_id ascending, then PT descending within type; no self-pairs/reversed duplicates.")
+        print("NOTE: multiple accepted pairs may share a particle; pair count is not distinct-particle count.")
     if args.basic_object_features:
-        print(f"OBJECT FEATURES: basic only ({', '.join(BASIC_OBJECT_COLUMNS)}).")
+        print(f"OBJECT FEATURES: basic only ({', '.join(spec.name for spec in model.observables)}).")
     if model.object_cut_priority:
+        completion_note = ("complete list required for final retention" if args.require_complete_priority
+                           else "incomplete rules eligible")
         print(f"OBJECT CUT PRIORITY: {' -> '.join(model.object_cut_priority)} -> unrestricted; "
-              "incomplete rules eligible; event cuts unrestricted.")
+              f"{completion_note}; event cuts unrestricted.")
+    if args.require_complete_priority:
+        print("PRIORITY COMPLETION: incomplete prefixes are searched; incomplete candidates are "
+              "excluded before rate, equivalence, logical and final similarity pruning. "
+              "An empty priority list imposes no restriction.")
     print("NOTE: native_event_info/pf are not inputs; schema-declared validity flags automatically guard cuts.")
     print("VALIDITY FLAGS: " + ("standalone cuts allowed (explicit opt-in)." if model.allow_validity_cuts
                                 else "guard-only; standalone True/False cuts disabled."))

@@ -51,8 +51,9 @@ def main(argv=None):
     parser = event_reporting._parser(__doc__, model="ERL")
     parser.add_argument("--reference-penalty", type=_nonnegative_float, default=1.0,
                         help="Lambda in Gini - lambda * reference acceptance (default: 1; 0 = pure Gini).")
-    parser.add_argument("--stricter-score-improvement", type=_nonnegative_float, default=0.0,
-                        help="Required score improvement for tighter thresholds or extra AND conditions; must be strictly above this value (default: 0).")
+    parser.add_argument("--stricter-score-improvement", type=_finite_float, default=0.0,
+                        help="Require score(stricter)-score(looser) > this value; "
+                             "negative values permit bounded score loss (default: 0).")
     parser.add_argument("--max-trigger-rate-khz", type=_nonnegative_float, default=None,
                         help="Optional per-rule reference rate budget in kHz; applied before logical-subset pruning.")
     parser.add_argument("--input-rate-mhz", type=_positive_float, default=40.0,

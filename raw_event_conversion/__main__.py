@@ -13,6 +13,8 @@ def main(argv=None):
     parser.add_argument("--label", type=int, required=True, help="Stored process label, for diagnostics only.")
     parser.add_argument("--max-events", type=int, help="Total row cap across inputs, after reading selected columns.")
     parser.add_argument("--without-native-event-info", action="store_true")
+    parser.add_argument("--with-pair-tensor", action="store_true",
+                        help="Also save distinct particle pairs, member properties, pair features and masks.")
     parser.add_argument("--without-met-features", action="store_true",
                         help="Omit event-level MET, PT/MET and object-MET angles with validity flags; keep total object PT.")
     for singular, plural in (("electron", "electrons"), ("muon", "muons"),
@@ -27,6 +29,7 @@ def main(argv=None):
             args.input, args.output, label=args.label, max_events=args.max_events, thresholds=thresholds,
             include_native_event_info=not args.without_native_event_info,
             include_met_features=not args.without_met_features,
+            include_pair_tensor=args.with_pair_tensor,
             overwrite=not args.no_overwrite,
         )
     except (OSError, TypeError, ValueError, KeyError) as error:

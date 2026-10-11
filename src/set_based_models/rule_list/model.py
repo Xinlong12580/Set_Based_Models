@@ -21,9 +21,15 @@ class ExistentialRuleList:
     Schema-linked validity flags are guard-only during discovery by default.
     ``allow_validity_cuts=True`` permits explicit flag cuts without disabling
     the automatic guards on their associated measurements.
-    ``object_cut_priority`` orders the first use of object features: only the
-    next unused listed feature is eligible until the list is exhausted.
+    ``object_cut_priority`` orders object cuts: only the feature at the next
+    list position is eligible until the list is exhausted. Repeated names
+    require additional cuts on that feature, one per position. A direction
+    can be supplied as 'feature:>' or (feature, '>'), using >, >=, < or <=.
+    Plain names leave the direction unrestricted. Thresholds are optimized.
     Event cuts stay unrestricted, and incomplete prefixes remain candidates.
+    Search states use packed masks; only the current parent's masks are dense.
+    Completed-layer results retain event selections, not unused slot masks.
+    This storage policy preserves candidate ordering, scores and similarity.
     """
 
     def __init__(self, observables: Sequence[ObservableSpec] = (), *, event_observables=(), max_rule_depth=4,
@@ -32,7 +38,7 @@ class ExistentialRuleList:
                  beam_signal_similarity_threshold=0.95,
                  beam_background_similarity_threshold=0.95,
                  beam_similarity_filter=True, allow_validity_cuts=False,
-                 object_cut_priority: Sequence[str] | None = (),
+                 object_cut_priority: Sequence[str | tuple[str, str | None]] | None = (),
                  scoring_function: RuleScorer = placeholder_rule_score):
         self.observables = tuple(observables)
         self.event_observables = _validate_event_observables(event_observables)
@@ -81,14 +87,20 @@ class ExistentialRuleList:
     def fit(self, signal=None, background=None, *, signal_slot_mask=None,
             background_slot_mask=None, signal_weight=None, background_weight=None,
             signal_event_features=None, background_event_features=None,
-            scoring_function: Callable[[RuleStatistics], float] | None = None):
+            scoring_function: Callable[[RuleStatistics], float] | None = None,
+            progress_callback: Callable[[dict], None] | None = None):
         """Fit object-only, event-only, or combined inputs.
 
         signal/background are optional 3D object arrays. Supply separate 2D
         signal_event_features/background_event_features for event observables.
         Both classes must use the same mode. Omitted objects create zero slots,
         not a dummy observable, and prevent all object-cut generation.
+        An optional progress_callback receives plain search-status dictionaries
+        (stage, depth, max_depth, parent/cut counts). No output is printed by
+        the core model; callbacks must not mutate model inputs or configuration.
         """
+        if progress_callback is not None and not callable(progress_callback):
+            raise TypeError("progress_callback must be callable or None")
         signal_data = SetInput.from_arrays(signal, self.observables,
                                            slot_mask=signal_slot_mask,
                                            sample_weight=signal_weight,
@@ -113,7 +125,9 @@ class ExistentialRuleList:
             allow_validity_cuts=self.allow_validity_cuts,
             object_cut_priority=self.object_cut_priority,
         )
-        self.candidate_rules_ = generator.generate(signal_data, background_data)
+        self.candidate_rules_ = generator.generate(
+            signal_data, background_data, progress_callback=progress_callback,
+        )
         self.selected_rules_ = []
         self.pruning_result_ = None
         self.input_mode_ = ("event_only" if signal_data.n_slots == 0 else
@@ -144,19 +158,24 @@ class ExistentialRuleList:
         similarity_filter=True,
         stricter_score_improvement=None,
         max_reference_acceptance=None,
+        require_complete_priority=False,
     ) -> list[ExistentialRule]:
         """Select final rules, preserving candidates and their original IDs.
 
         Defaults retain the existing Jaccard-only policy. Set
-        ``stricter_score_improvement`` to a finite nonnegative value to merge
-        equivalent rules and require strict subsets to improve a
-        retained looser rule's score by MORE than this absolute threshold.
+        ``stricter_score_improvement`` to a finite value to merge equivalent
+        rules and require score(stricter) - score(looser) to exceed that
+        threshold. Negative values allow a bounded score loss.
         Both tighter bounds and extra AND conditions are covered, with 1e-12
         roundoff tolerance. Event, object, and mixed rules are supported;
         object predicates share a slot scope and minimum counts are respected.
 
+        ``require_complete_priority=True`` excludes candidates that have not
+        consumed every object-priority entry, before all other pruning stages.
+        Incomplete prefixes remain available during search and in candidate_rules_.
+        An empty priority list imposes no completion restriction.
         Optional ``max_reference_acceptance`` is a weighted training fraction
-        in [0, 1], applied first. Optional similarity pruning runs last and can
+        in [0, 1], applied next. Optional similarity pruning runs last and can
         remove looser rules; disable it to preserve the logical-only policy.
         Beam search is unchanged. Results and per-candidate audits are stored
         in ``selected_rules_`` and ``pruning_result_`` and reset on refitting.
@@ -167,6 +186,7 @@ class ExistentialRuleList:
             background_similarity_threshold=background_similarity_threshold,
             stricter_score_improvement=stricter_score_improvement,
             max_reference_acceptance=max_reference_acceptance,
+            required_object_cut_priority=self.object_cut_priority if require_complete_priority else (),
         )
         self.pruning_result_ = result
         self.selected_rules_ = list(result.retained)

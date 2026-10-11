@@ -113,6 +113,17 @@ scores, acceptances, configuration and final-pruning decisions.
   `--object-cut-priority type_id pt`.
 - For **object-only** discovery, replace `--event-only` with `--object-only`;
   optionally add `--basic-object-features --object-cut-priority type_id pt`.
+- For **particle-pair** discovery, convert both raw samples with
+  `--with-pair-tensor`, then run the flexible ERL script with
+  `--pair-tensor --object-only --object-cut-priority type_id_1 type_id_2`.
+  Omit `--object-only` to also use event features. See the
+  [pair-tensor guide](raw_event_conversion/PAIRS.md) for features and a command.
+- Add `--progress` to the flexible ERL runner for a live beam-search progress
+  display: depth, processed parents, candidate cuts, beam filtering and elapsed
+  time. It is off by default and writes to stderr, so `> run.log` or
+  `| tee run.log` still captures only stdout. Redirect `2>&1` to capture progress
+  as well; non-terminal output uses occasional plain lines rather than a live
+  bar. Progress covers candidate generation, not final pruning or report writing.
 - Use different report/log names for each configuration. Object priority
   cannot be used in event-only mode.
 - To request a nominal per-rule rate limit, add
@@ -133,6 +144,20 @@ The plot shows retained, mixture-enriched rules: reference acceptance on the
 horizontal axis, mixture acceptance vertically, and rule definitions alongside.
 If no rules satisfy that display selection, use `--rules all --direction all`
 to inspect the candidate pool rather than assuming discovery succeeded.
+
+For mixtures converted with `--with-pair-tensor`, inspect the diphoton mass
+distribution directly (no ERL fit is required):
+
+```bash
+python scripts/plot_diphoton_mass.py data/ggHgammagamma_mixture/anomalous.pt \
+  --output reports/ggHgammagamma_diphoton_mass.png --mass-range 0 250 --bins 100
+```
+
+The plot overlays the mixture and its stored process labels and excludes
+padded/invalid pairs. By default all photon pairs contribute; add
+`--pairs leading` for one entry per event from the two highest-PT stored
+photons. Optional `--leading-pt-min`, `--subleading-pt-min`, and `--sum-pt-min`
+apply strict PT cuts in GeV. `--log-y` enables a logarithmic count axis.
 
 Rerunning this workflow replaces its example outputs: conversion and mixing
 warn before overwrite; the report and plotting commands explicitly allow it.
@@ -170,6 +195,13 @@ reconstruction stability and hardware constraints.
 See the [technical software reference](reports/ERL_implementation.md)
 ([PDF](reports/ERL_implementation.pdf)) or the
 [introductory report](reports/ERL_introductory_report.pdf) for more detail.
+
+For report-analysis integrations, start with the [AI analysis guide](docs/AI_GUIDE.md)
+and [report-format reference](docs/REPORT_FORMAT.md). The
+[JSON Schema](schemas/quantitative_report.schema.json) documents the versioned
+structure, and [small annotated examples](examples/reports/README.md) illustrate
+EDT/ERL interpretation without real datasets. These files do not enable a
+GitHub connection or change model behavior.
 
 ## Inputs
 
@@ -290,9 +322,26 @@ The event-only ERL runners (ordinary, penalized, and nested Gini) use this
 native mode; their command-line arguments are unchanged. The event-only EDT
 runner still uses its existing fully masked dummy-slot implementation.
 
+## ERL search memory
+
+Mask packing is automatic for all input modes; no runner switch or tensor
+regeneration is needed. Temporary expansions store event and slot masks as
+packed bits, shared with the exact duplicate-detection key. Beam similarity
+uses bitwise Jaccard comparisons without unpacking every candidate.
+
+Only the current parent is unpacked for cut generation and evaluation.
+Non-retained expansions are released after beam selection; completed-layer
+results keep cut histories and packed event selections, not slot masks.
+Public rules still expose ordinary Boolean event selections and predictions.
+This changes storage, not scores, search coverage, ranking or pruning policies.
+
+Packing reduces mask payload approximately eightfold, but input arrays,
+validity arrays and other allocations still require RAM. Candidate generation
+still precedes beam selection: beam width is not a bound on expansion count.
+
 ## ERL object-cut priority
 
-An optional ordered list restricts the first use of object features:
+An optional ordered list restricts the sequence of object cuts:
 
 ```python
 rules = ExistentialRuleList(
@@ -306,18 +355,56 @@ object features are available, including those already used. This does not
 fix the category, threshold, or comparison direction. Event cuts remain
 unrestricted and do not advance object priority. All cuts still consume depth.
 
+Repeated names are allowed and consume separate positions. For example,
+`--object-cut-priority type_id pt pt` requires two successive momentum cuts
+after the type cut. This permits a two-sided interval but does not force
+opposite comparison directions; both cuts may refine the same bound.
+Beam selection and final pruning still apply to these rules.
+
+Numerical entries can optionally specify `>`, `>=`, `<`, or `<=`. For example:
+
+```bash
+--object-cut-priority type_id 'pt:>' 'pt:<='
+```
+
+This requires a lower momentum bound followed by an upper bound, with both
+thresholds optimized from the data. Quote these entries to prevent shell
+redirection. Python also accepts `(feature, direction)` pairs, for example
+`object_cut_priority=["type_id", ("pt", ">"), ("pt", "<=")]`.
+Directions apply only to numerical features; categorical entries remain plain
+names. A window still takes two search steps, and its first bound must survive
+beam selection. Plain names retain unrestricted comparison directions.
+
 Incomplete rules, such as `EXISTS type_id in {photon}`, remain eligible for
-ranking and final selection; completing the list is not required. Normal
+ranking and final selection by default; completing the list is optional. Normal
 acceptance, beam-width, score, candidate-cap, and pruning limits still apply.
 If a required feature has no usable cut, that prefix cannot add another object
 cut; it can still be returned or extended with event cuts. There is no fallback
 to a lower-priority object feature. No priority (the default, `()` or `None`)
 preserves the unrestricted search.
 
-Feature names must be unique, belong to the object schema, and be enabled for
-discovery. Guard-only validity flags cannot be prioritized without opting into
+Names must belong to the object schema and be enabled for discovery; repeated
+entries are supported. Guard-only validity flags cannot be prioritized without opting into
 standalone validity cuts. Priorities require actual object inputs at fitting.
-Beam deduplication/similarity include priority progress; final pruning is unchanged.
+Beam deduplication/similarity include priority progress. Final logical and
+similarity filters remain independent of the priority order.
+
+Add `--require-complete-priority` to retain only rules consuming every priority
+entry, including repeats and specified directions. Incomplete prefixes remain
+available during beam search and in the report's candidate pool, but are
+excluded before final rate, equivalence, logical, and similarity pruning.
+For retained rules containing both bounds, use:
+
+```bash
+--object-cut-priority type_id 'pt:>' 'pt:<=' \
+  --require-complete-priority
+```
+
+The core API is `model.prune_candidates(require_complete_priority=True, ...)`.
+This is off by default; an empty priority list imposes no restriction. If no
+complete candidate survives search, final selection is empty rather than
+falling back to incomplete rules. Completion uses original cut histories,
+not display-simplified predicates.
 
 The flexible runner exposes this as:
 
@@ -347,6 +434,12 @@ event feature vector. `matches_slots()` accepts a shared vector, per-event
 features for a 3D slot tensor, or per-slot event features. These helpers evaluate
 conditions without count aggregation. A union aggregates each rule separately
 before taking the logical OR.
+
+The final logical-pruning threshold accepts negative values. For example,
+`--stricter-score-improvement -0.008` allows a stricter rule's score to drop by
+less than 0.008 relative to applicable retained looser rules. Positive values
+require improvement; zero requires a strictly better score. Rate and similarity
+filters still apply independently, and ranking remains score-based.
 
 ## Automatic validity guards
 

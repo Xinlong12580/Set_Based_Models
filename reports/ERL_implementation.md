@@ -1,6 +1,6 @@
 ---
 title: "ERL Software Reference and Trigger-Study Configuration"
-date: "7 October 2026"
+date: "11 October 2026"
 lang: en
 papersize: a4
 fontsize: 10pt
@@ -37,7 +37,8 @@ the software's discovery workflow.
 
 The principal study entry point is
 `casual_tests/run_ERL_Gini_nested.py`.
-It supports object-only, event-only and combined discovery. Final pruning is
+It supports single-object or particle-pair inputs, event-only and combined
+discovery. Final pruning is
 model built-in; physics-specific rate units and assumptions remain external.
 
 \Needspace{16\baselineskip}
@@ -86,8 +87,11 @@ event: met > 100 AND
 - Event conditions restrict accepted events without changing which slots
   satisfy the object conditions.
 - Mixed-type or asymmetric multi-object triggers are naturally expressed with
-  event counts or leading/subleading features. A same-object type conjunction
-  cannot mean “one muon and one electron.”
+  event counts, leading/subleading features or a dedicated pair tensor.
+  A same-single-object type conjunction cannot mean “one muon and one electron.”
+- A particle pair can occupy one object slot. All member and pair predicates
+  then apply to that **same pair**, not independently chosen particles.
+  Counting pair slots does not count distinct particles: pairs can share members.
 - Conditions within a rule use AND. `RuleUnion` uses OR across rules, evaluating
   each rule's object-count requirement independently.
 
@@ -121,7 +125,7 @@ Generation proceeds through the following stages:
 
 1. Start from all events and present objects.
 2. Extend each beam prefix with one object or event condition.
-3. Test numeric midpoints using `>` and `<=`; subsample ordered thresholds
+3. Test numeric midpoints using `>` and `<=` by default; subsample ordered thresholds
    when the threshold budget is exceeded. Test singleton categorical/Boolean
    membership conditions.
 4. Evaluate whole-rule accepted yields against the original class totals.
@@ -140,8 +144,10 @@ Key behavior:
 - Search is approximate. A wider beam can preserve useful extensions; increasing
   the final candidate cap cannot recover prefixes lost earlier.
 
+### Ordered, repeated and directed object cuts
+
 Optional `object_cut_priority=["type_id", "pt"]` makes the next object cut
-use the first unused listed feature:
+consume the next list position:
 
 | Prefix state | Eligible next object feature |
 | --- | --- |
@@ -150,12 +156,48 @@ use the first unused listed feature:
 | Both used | Any enabled object feature, including refinements |
 
 - Event cuts stay unrestricted and do not advance object priority.
-- Incomplete priority rules remain eligible for ranking and final selection.
+- Entries can repeat. `["type_id", "pt", "pt"]` requires two PT cuts after
+  the type cut; using PT once does not consume both positions.
+- A numerical entry can restrict direction to `>`, `>=`, `<` or `<=`.
+  Python accepts `"pt:>"` or `("pt", ">")`; plain names leave direction free.
+- For example, `["type_id", ("pt", ">"), ("pt", "<=")]` requires a lower
+  bound followed by an upper bound on the same object. Bounds are optimized
+  from data; they are not fixed by the priority list.
+- Incomplete priority rules remain final candidates and, by default, can be retained.
 - If a required feature has no usable cut, that prefix cannot extend through
   another object feature; event extensions remain possible.
-- Names must be unique and enabled in the object schema. An empty list or
-  `None` disables priority.
+- Feature names must belong to the enabled object schema. Directions apply to
+  numerical features, not categorical membership. An empty list or `None`
+  disables priority.
 - Priority imposes no per-type beam quotas or exemptions from acceptance limits.
+- Directed interval bounds still take two search steps. Their first bound must
+  survive the beam; this is not joint interval optimization.
+
+### Optional completion requirement
+
+`prune_candidates(require_complete_priority=True)` retains only rules consuming
+every configured priority entry, including repetitions and directions.
+
+- Completion is checked against the original ordered cut history, not simplified
+  display predicates. Event cuts and automatic validity guards do not consume entries.
+- Incomplete prefixes remain available during beam search and in `candidate_rules_`.
+  Completion filtering occurs before all other final-selection stages, so an
+  incomplete rule cannot act as a pruning witness against a completed one.
+- The option is off by default. An empty priority list is already complete.
+  If no complete candidate survives search, final selection is empty; no fallback
+  or automatic depth/beam increase is made.
+
+### Progress and mask storage
+
+- `fit(progress_callback=callback)` emits search-stage dictionaries. The runner's
+  `--progress` displays depth, processed beam parents, candidate cuts, beam filtering
+  and elapsed time on stderr. It does not estimate a whole-fit ETA or cover final pruning.
+- Search masks are bit-packed; only the current parent's masks are unpacked.
+  Non-retained expansions are released after beam selection, and completed-layer
+  results keep event selections rather than unnecessary slot masks.
+- Packing reduces mask payload about eightfold without changing search semantics.
+  Input arrays and expanded candidates still use memory; beam width is not a hard
+  limit on the number of temporary expansions. Public rules expose Boolean masks.
 
 ## Similarity and final pruning
 
@@ -167,11 +209,14 @@ selections have overlap one.
 - **Final similarity:** compares signal/reference event selections only.
 - Both class comparisons must satisfy their thresholds. Higher thresholds
   prune less aggressively; candidates are considered score-first.
+- Overlapping prefixes can still support different later cuts. Aggressive beam
+  similarity may remove useful refinements before they can be constructed.
 
 After `fit`, call `prune_candidates`. Its selection order is:
 
 ```text
 candidate pool
+  -> priority-completion eligibility (optional)
   -> reference-acceptance eligibility
   -> normalization and equivalence merging
   -> stricter-rule improvement filtering
@@ -181,21 +226,27 @@ candidate pool
 All stages are configurable. The core preserves original candidates and IDs;
 selected rules and decisions are stored separately.
 
-**Logical pruning** is enabled by a finite, nonnegative
+**Logical pruning** is enabled by a finite, signed
 `stricter_score_improvement`; `None` disables it.
 
 - Normalize repeated bounds and category constraints separately in object/event
   scope; merge equivalent rules, preferring shorter rules, then score and ID.
-- A stricter rule must improve a retained looser rule's score by **more than**
-  the threshold, with `1e-12` roundoff tolerance. Tighter bounds, additional
+- A stricter rule must satisfy `score(stricter) - score(looser) > threshold`,
+  with `1e-12` roundoff tolerance. Tighter bounds, additional
   AND conditions and minimum-count ordering are supported.
+- Positive thresholds require improvement; zero requires a strictly better
+  score. Negative thresholds allow bounded score loss: `-0.01` permits a drop
+  smaller than 0.01 relative to every applicable retained looser rule.
+- Allowing score loss does not change ranking or disable equivalence, similarity,
+  completion or acceptance filtering. It can preserve more-specific descriptions
+  that are not the highest-coverage selections.
 - Looser rules are considered first; retained results are finally score-ranked.
 - Containment is proved from predicates, not coincident training selections.
   Semantic implications between different features are not inferred.
 - Original steps and scores are unchanged; normalized cuts provide a separate
   simplified representation.
-- Acceptance eligibility comes first: an over-budget looser rule cannot prune
-  an eligible stricter rule. Final similarity can still remove looser alternatives.
+- Eligibility comes first: incomplete or over-budget rules cannot prune eligible
+  candidates. Final similarity can still remove looser or stricter alternatives.
 
 `max_reference_acceptance` is an optional fraction in `[0,1]`, applied to
 each rule's weighted training acceptance. It is not a combined OR/menu limit.
@@ -222,9 +273,13 @@ Core defaults versus the principal study runner are listed together in the
 configuration section below. Fitting generates candidates; final pruning
 requires its own call.
 
-The core also supplies `TPRFPRRuleScore`, `TargetFPRRuleScore`,
-`PurityCoverageRuleScore`, `FScoreRuleScore`, `SignificanceRuleScore`
-and `LikelihoodRatioRuleScore`. A custom callable may replace them.
+Built-in scoring alternatives are:
+
+- `TPRFPRRuleScore` and `TargetFPRRuleScore`.
+- `PurityCoverageRuleScore` and `FScoreRuleScore`.
+- `SignificanceRuleScore` and `LikelihoodRatioRuleScore`.
+
+A custom callable may replace them.
 
 # Input features and direct conversion
 
@@ -251,6 +306,8 @@ error; there is no fallback to non-PUPPI jets/MET.
 | --- | --- |
 | `obj` | float32 `[N,22,20]`; no MET object |
 | `obj_columns`, `obj_feature_schema` | Ordered object definitions, types, applicability and guards |
+| `pair_obj`, `pair_slot_mask` | Optional float32 `[N,231,68]` pairs and Boolean `[N,231]` presence |
+| Pair metadata | Optional column names, schema and source-object index pairs |
 | `event_features` | float64 `[N,193]` |
 | `event_feature_columns`, `event_feature_schema` | Ordered names, kinds, units, sources and formulas |
 | `label` | Process label for diagnostics, not the discovery target |
@@ -259,6 +316,8 @@ error; there is no fallback to non-PUPPI jets/MET.
 | Provenance | Source-file and source-row indices; neighboring `.sources.json` |
 
 These shapes describe converter defaults, not fixed ERL requirements.
+Add `--with-pair-tensor` / `include_pair_tensor=True` to save the separate pair
+tensor; existing object and event tensors are unchanged.
 Conversion schemas/settings must agree between datasets. Saved feature-to-flag
 links determine runtime guards. New columns require regenerated tensors.
 
@@ -292,6 +351,30 @@ Padding and invalid values:
 - Missing/nonfinite object eta/phi is zero-filled **without dedicated guards**.
 - Counts and charge must be integers. Mass, counts and energy ratios are
   nonnegative; finite negative corrected isolation is preserved.
+
+## Particle-pair features
+
+The optional pair tensor uses all unordered combinations of the 22 retained
+object slots: 231 possible pairs, excluding self-pairs and reversed duplicates.
+
+- Each slot stores two distinct objects. Member order is increasing type ID,
+  then decreasing PT within a type; equal-PT ties retain producer order.
+- The 68 columns comprise 44 member columns (the 20 object fields plus eta/phi
+  guards for each member), and 12 derived quantities with 12 validity flags.
+- Derived quantities include minimum/scalar-sum/vector-sum PT, PT balance,
+  invariant mass, absolute eta/phi separations, delta R, maximum isolation,
+  minimum absolute D0, opposite-charge and opposite-eta-hemisphere indicators.
+- Pair mass uses raw coordinates, valid measured jet masses, fixed lepton masses
+  and zero photon mass. Required missing measurements invalidate the result.
+- `pair_slot_mask` records both members' presence; schema-linked flags protect
+  derived and copied measurements. Padded values never replace valid pairs.
+- Pairs use capped objects; event summaries still use full stored collections.
+  Pair slots scale quadratically with the object count and can substantially
+  increase fitting time and memory.
+
+The runner's `--pair-tensor` selects `pair_obj` instead of `obj`; events remain
+enabled unless `--object-only` is supplied. See `raw_event_conversion/PAIRS.md`
+for the schema and ordering details.
 
 \Needspace{30\baselineskip}
 
@@ -351,9 +434,9 @@ $$\Delta R=\sqrt{(\Delta\eta)^2+(\Delta\phi)^2}.$$
   compare the leading objects of each type, not the closest pair.
 - Six cross-type pairs cover all combinations of electrons, muons, photons
   and jets.
-- MET angles are `delta_phi_leading_jet_met`, `min_delta_phi_jets_met`,
-  `delta_phi_leading_photon_met`, `delta_phi_leading_electron_met` and
-  `delta_phi_leading_muon_met`.
+- MET angles compare each leading object type with MET:
+  `delta_phi_leading_<type>_met` for jet, photon, electron and muon.
+  `min_delta_phi_jets_met` also gives the minimum across all eligible jets.
 - Angles are in radians with explicit guards. MET direction requires finite
   positive MET and finite phi. The minimum jet angle uses all eligible jets,
   including soft ones. Invalid coordinates do not promote a lower-ranked object.
@@ -413,17 +496,21 @@ where `a_R` is full-reference acceptance and
   not make the searches identical: EDT splits a current node, while ERL scores
   whole conjunctions and retains a finite beam.
 
+\Needspace{29\baselineskip}
+
 ## Defaults and CLI controls
 
 | Setting | Core ERL default | Flexible runner |
 | --- | --- | --- |
-| Maximum rule depth | 4 | 3 |
-| Beam width | 100 | 50 |
-| Candidate cap | 1000 | 500 |
+| Maximum rule depth | 4 | 4 |
+| Beam width | 100 | 40 |
+| Candidate cap | 1000 | 300 |
 | Numeric threshold cap | 64 | 32 |
 | Minimum matching count | 1 | 1 |
 | Minimum signal-input acceptance | 0 | 0.01 |
 | Object-cut priority | Off | Off |
+| Required priority completion | Off when pruning | Off |
+| Progress output | No callback | Off |
 | Standalone linked validity cuts | Off | Off |
 | Beam similarity | On | Off |
 | Beam class similarity thresholds | 0.95 / 0.95 | 0.1 / 0.1 |
@@ -440,9 +527,14 @@ constructor settings in the script, not CLI flags.
 - `--signal`, `--background`: anomalous-mixture and reference PT files.
 - `--event-only` / `--no-object-features`: disable objects.
 - `--object-only` / `--no-event-features`: disable event features.
-- `--basic-object-features`: use only `pt, eta, phi, type_id`.
-- `--object-cut-priority FEATURE [FEATURE...]`: compulsory first-use order.
+- `--pair-tensor` / `--use-pair-tensor`: load saved pairs instead of single objects.
+- `--basic-object-features`: retain PT, eta, phi and type per member, plus linked
+  coordinate guards when required by the pair schema; omit derived pair features.
+- `--object-cut-priority FEATURE[:DIRECTION] [...]`: ordered cut entries;
+  repeats and numerical directions are supported. Quote operators in Bash.
+- `--require-complete-priority`: exclude incomplete candidates before final pruning.
 - `--allow-validity-cuts`: permit standalone linked flag cuts.
+- `--progress`: display search progress on stderr.
 
 Both modalities cannot be disabled. Basic-object mode and priority require
 objects; priority names must belong to the enabled object schema.
@@ -450,8 +542,8 @@ objects; priority names must belong to the enabled object schema.
 **Scoring and selection**
 
 - `--reference-penalty`: default 1.
-- `--stricter-score-improvement`: nonnegative absolute score increment,
-  default 0; larger values prune more strict subsets.
+- `--stricter-score-improvement`: signed score-difference threshold, default 0;
+  larger values prune more strict subsets, negative values allow bounded loss.
 - `--beam-similarity-filter`, `--final-similarity-filter`: independent opt-ins.
 - `--signal-similarity-threshold`, `--background-similarity-threshold`:
   default 0.1 each when similarity is enabled.
@@ -504,13 +596,17 @@ Reports contain **JSON in a `.txt` file**, loadable with `json.load`:
 - Input sizes/paths, feature schemas, enabled modes and full configuration.
 - Candidate IDs, raw/normalized predicates, effective depth and score.
 - Mixture/reference accepted counts and fractions; raw Gini and penalty terms.
-- Prefix histories, automatic guards and remaining object priority.
+- Prefix histories, automatic guards, remaining priority entries and completion status.
+- Selected tensor key, pair schema, progress/completion configuration and removal counts.
 - Final retention, pruning reason, witness ID and optional rate estimate.
 - Stored-process diagnostics, which never enter the score.
 
 All capped candidates are saved, including final-pruned and incomplete priority
 rules. Prefixes removed during beam search are not included. Displayed normalized
 conditions can be reordered; prefix histories preserve the generation order.
+Completion exclusions have status `incomplete_object_priority` and no witness.
+`object_cut_priority_complete` and `object_cut_priority_remaining` describe each
+candidate; `summary.incomplete_priority_rules_removed` counts excluded prefixes.
 
 | Ranking/statistic | Meaning |
 | --- | --- |
@@ -528,6 +624,8 @@ and mixture acceptance vertically, with rule paths on the right. It filters
 the requested subset and preserves report order; it does not rerank by purity.
 `scripts/plot_all_reports.sh` provides batch plotting.
 
+\Needspace{36\baselineskip}
+
 # Usage
 
 ## Core API
@@ -541,7 +639,7 @@ from set_based_models import ExistentialRuleList, TPRFPRRuleScore
 model = ExistentialRuleList(
     object_schema, event_observables=event_schema,
     scoring_function=TPRFPRRuleScore(), min_signal_efficiency=0.01,
-    object_cut_priority=["type_id", "pt"])
+    object_cut_priority=["type_id", ("pt", ">")])
 model.fit(
     mixture_objects, reference_objects,
     signal_slot_mask=mixture_mask, background_slot_mask=reference_mask,
@@ -549,7 +647,7 @@ model.fit(
     background_event_features=reference_events)
 selected = model.prune_candidates(
     stricter_score_improvement=0.01, max_reference_acceptance=0.001,
-    similarity_filter=False)
+    similarity_filter=False, require_complete_priority=True)
 menu = model.build_union([rule.rule_id for rule in selected])
 accepted = menu.predict(validation_objects, slot_mask=validation_mask,
                         event_features=validation_events)
@@ -572,31 +670,35 @@ python -m raw_event_conversion \
   --output data/minbias_raw.pt --label 1 --max-events 10000
 
 python -m raw_event_conversion \
-  --input raw/ggHgammagamma/*.parquet \
-  --output data/ggHgammagamma_raw.pt --label 2 --max-events 10000
+  --input raw/signal/*.parquet \
+  --output data/signal_raw.pt --label 2 --max-events 10000
 
 python scripts/make_reference_anomalous.py \
   --background data/minbias_raw.pt \
-  --signal data/ggHgammagamma_raw.pt \
-  --output-dir data/ggHgammagamma_mixture
+  --signal data/signal_raw.pt \
+  --output-dir data/example_mixture
 
 python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/ggHgammagamma_mixture/anomalous.pt \
-  --background data/ggHgammagamma_mixture/reference.pt \
-  --report reports/ERL_ggHgammagamma_combined.txt \
-  --object-cut-priority type_id pt \
+  --signal data/example_mixture/anomalous.pt \
+  --background data/example_mixture/reference.pt \
+  --report reports/ERL_example_combined.txt \
+  --object-cut-priority type_id 'pt:>' --require-complete-priority \
   --reference-penalty 10 --stricter-score-improvement 0.01 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40
 
 python scripts/plot_acceptance_report.py \
-  reports/ERL_ggHgammagamma_combined.txt \
-  --output reports/ERL_ggHgammagamma_combined.png
+  reports/ERL_example_combined.txt \
+  --output reports/ERL_example_combined.png
 ```
 
 - Add `--object-only` to restrict discovery to objects.
 - For event-only, add `--event-only` and remove object priority.
 - To enable both similarity stages, add
   `--beam-similarity-filter --final-similarity-filter` and choose thresholds.
+- To use pairs, convert both classes with `--with-pair-tensor`, then add
+  `--pair-tensor`; configure priorities using member names such as `type_id_1`.
+- Completion is optional; omit `--require-complete-priority` to retain useful
+  incomplete prefixes. Add `--progress` for search-stage feedback.
 - Penalty 10, improvement 0.01 and priority are example settings, not defaults
   or universally recommended values. Use distinct report names for comparisons.
 
@@ -605,10 +707,12 @@ python scripts/plot_acceptance_report.py \
 # Operational limitations
 
 - **Search:** finite beams, threshold budgets and caps provide no global-optimum
-  guarantee. Priority restricts object features, not event cuts or final rule length.
+  guarantee. Priority restricts object cuts, not event cuts. Completion affects
+  final eligibility only and cannot recover a path lost from the beam.
 - **Logic:** no inferred cross-feature physics relationships, general independent
   multi-object quantifiers, feature decorrelation or object overlap removal.
-  Invariant masses and event-shape variables are not default features.
+  Optional pair features support two-member predicates, not arbitrary independent
+  object quantifiers. Event-shape variables are not supplied by default.
 - **Validity:** only schema-linked measurements are protected. Unguarded object
   eta/phi placeholders and producer-availability features need interpretation checks.
 - **Zero-pass candidates:** with minimum acceptance zero, contradictory rules can
@@ -624,7 +728,9 @@ python scripts/plot_acceptance_report.py \
   hardware threshold grid. Source-field limitations must be checked before
   interpreting detector-sensitive cuts.
 
-Key references: core code in `src/set_based_models/rule_list/`,
-conversion in `raw_event_conversion/`, and study scoring/reporting in
-`casual_tests/`. Additional feature and source details are in
-`raw_event_conversion/README.md` and `IMPACT_PARAMETERS.md`.
+Key references:
+
+- Core code: `src/set_based_models/rule_list/`.
+- Conversion and feature definitions: `raw_event_conversion/README.md`.
+- Source-field caveats: `raw_event_conversion/IMPACT_PARAMETERS.md`.
+- Study scoring and reporting: `casual_tests/`.
