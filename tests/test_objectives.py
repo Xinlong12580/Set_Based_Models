@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from set_based_dt import (
+from set_based_models.core import (
     DirectTPRFPRGain,
     PartitionStatistics,
     SignificanceGain,

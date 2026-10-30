@@ -16,8 +16,8 @@ import numpy as np
 import torch
 
 from set_based_models import (
-    EventCut, ExistentialDecisionTree, ExistentialRuleList, ObservableSpec,
-    SetInput, gini_gain,
+    EventCut, ExistentialRuleList, ObservableSpec,
+    SetInput,
 )
 from casual_tests import _quantitative_reporting as reporting
 
@@ -177,73 +177,10 @@ def _print_header(report, target):
 
 
 def run_edt_cli(argv=None, *, description):
-    parser = _parser(description, model="EDT")
-    args = parser.parse_args(argv)
-    signal, background, target = _load_pair(parser, args, "EDT")
-    tree = ExistentialDecisionTree(
-        DUMMY_OBSERVABLES, event_observables=signal.event_observables,
-        max_depth=6, gain_function=gini_gain, min_samples_leaf=20,
-    )
-    tree.fit(
-        signal.objects, background.objects,
-        signal_slot_mask=signal.slot_mask, background_slot_mask=background.slot_mask,
-        signal_event_features=signal.event_features, background_event_features=background.event_features,
-    )
-    if any(node.cut is not None and not isinstance(node.cut, EventCut) for node in tree.nodes_):
-        raise RuntimeError("Unexpected object-level cut in an event-only tree.")
-    selected_leaves = [tree.apply(data.objects, slot_mask=data.slot_mask,
-                                 event_features=data.event_features) for data in (signal, background)]
-    leaves = sorted((node for node in tree.nodes_ if node.is_leaf),
-                    key=lambda node: node.score if node.score is not None else -np.inf, reverse=True)
-    records = []
-    for rank, leaf in enumerate(leaves, start=1):
-        steps = []
-        for step in tree.cut_chain(leaf.node_id):
-            source = tree.get_node(step.source_node_id)
-            steps.append({
-                "source_node_id": step.source_node_id, "branch": step.branch.value, "scope": "event",
-                "cut": reporting._cut_record(step.cut, tree.event_observables),
-                "selected_condition": reporting._selected_condition(
-                    step.cut, tree.event_observables, step.branch, None),
-                "source_split_gain": source.statistics.split_gain if source.statistics else None,
-            })
-        records.append({
-            "rank": rank, "leaf_id": leaf.node_id, "depth": leaf.depth,
-            "leaf_signal_fraction": leaf.score,
-            "predicted_class_at_default_threshold": int(
-                leaf.score is not None and leaf.score >= tree.decision_threshold),
-            "metrics": reporting._selection_metrics(
-                selected_leaves[0] == leaf.node_id, selected_leaves[1] == leaf.node_id,
-                signal.labels, background.labels),
-            "path": steps,
-        })
-    predictions = [tree.predict(data.objects, slot_mask=data.slot_mask,
-                                event_features=data.event_features).astype(bool)
-                   for data in (signal, background)]
-    report = _base_report("EDT", signal, background)
-    report.update({
-        "configuration": {
-            "gain_function": "gini_gain", "max_depth": 6, "min_samples_leaf": 20,
-            "decision_threshold": tree.decision_threshold, "minimum_count": tree.aggregation.minimum_count,
-            "max_thresholds": tree.max_thresholds, "object_features_enabled": False,
-        },
-        "summary": {
-            "node_count": len(tree.nodes_), "leaf_count": len(leaves),
-            "default_prediction": reporting._selection_metrics(
-                *predictions, signal.labels, background.labels),
-        },
-        "results": {"leaves": records},
-    })
-    _print_header(report, target)
-    reporting._print_selection("DEFAULT TREE SELECTION", report["summary"]["default_prediction"])
-    reporting._print_section("LEAVES RANKED BY MIXTURE FRACTION")
-    displayed = records if args.print_top == 0 else records[:args.print_top]
-    for record in displayed:
-        reporting._print_edt_leaf(record)
-    if len(displayed) < len(records):
-        print(f"\n... {len(records) - len(displayed)} additional leaves are stored in the report.")
-    reporting._write_report(target, report, overwrite=args.overwrite_report)
-    print(f"\nStructured report saved to: {target}")
+    """Compatibility entry point; ERL imports never load EDT reporting."""
+    from casual_tests._edt_reporting import run_event_edt_cli
+
+    return run_event_edt_cli(argv, description=description)
 
 
 def run_erl_cli(argv=None, *, description):

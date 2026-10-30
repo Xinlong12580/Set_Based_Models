@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from heapq import heapify, heappop, heappush
 import numpy as np
 from ..core.candidates import event_candidate_cuts, observable_cuts
 from ..core.data import SetInput
@@ -64,10 +65,12 @@ class BeamRuleGenerator:
                  max_thresholds, minimum_count, min_signal_efficiency,
                  scoring_function, beam_signal_similarity_threshold=0.95,
                  beam_background_similarity_threshold=0.95,
-                 beam_similarity_filter=True, allow_validity_cuts=False,
+                 beam_similarity_filter=True, beam_novelty_weight=0.0, allow_validity_cuts=False,
                  object_cut_priority=()):
         if not isinstance(allow_validity_cuts, bool):
             raise TypeError("allow_validity_cuts must be a boolean")
+        if not np.isfinite(beam_novelty_weight):
+            raise ValueError("beam_novelty_weight must be finite")
         self.max_rule_depth = max_rule_depth
         self.beam_width = beam_width
         self.max_candidate_rules = max_candidate_rules
@@ -78,6 +81,7 @@ class BeamRuleGenerator:
         self.beam_signal_similarity_threshold = beam_signal_similarity_threshold
         self.beam_background_similarity_threshold = beam_background_similarity_threshold
         self.beam_similarity_filter = beam_similarity_filter
+        self.beam_novelty_weight = beam_novelty_weight
         self.allow_validity_cuts = allow_validity_cuts
         self.object_cut_priority = _validate_object_cut_priority(object_cut_priority)
 
@@ -190,7 +194,13 @@ class BeamRuleGenerator:
             if not beam: break
         beam.clear()  # Final-layer slot states are never needed again.
         pool.sort(key=lambda c: c.score, reverse=True)
-        if self.max_candidate_rules is not None: pool = pool[:self.max_candidate_rules]
+        if self.max_candidate_rules is not None:
+            if self.beam_novelty_weight and len(pool) > self.max_candidate_rules:
+                pool = _retain_novel(pool, self.max_candidate_rules, self.beam_novelty_weight,
+                                     signal_mask=lambda candidate: candidate.signal_selection)
+                pool.sort(key=lambda candidate: candidate.score, reverse=True)
+            else:
+                pool = pool[:self.max_candidate_rules]
         emit("building_rules", candidate_rules=len(pool))
         rules = [ExistentialRule(
                     i, signal.observables, c.steps, self.minimum_count,
@@ -204,6 +214,11 @@ class BeamRuleGenerator:
 
     def _retain_diverse(self, candidates, *, progress_callback=None):
         """Greedily keep strong candidates with distinct event/slot states."""
+        if self.beam_novelty_weight:
+            return _retain_novel(candidates, self.beam_width, self.beam_novelty_weight,
+                                 signal_mask=lambda candidate: candidate.state[1],
+                                 redundant=self._similar if self.beam_similarity_filter else None,
+                                 progress_callback=progress_callback)
         if not self.beam_similarity_filter:
             return candidates[:self.beam_width]
         retained = []
@@ -211,18 +226,7 @@ class BeamRuleGenerator:
         for processed, candidate in enumerate(candidates, 1):
             if progress_callback is not None:
                 progress_callback(processed - 1, len(candidates), len(retained))
-            redundant = any(
-                candidate.object_priority_progress == previous.object_priority_progress
-                and _packed_jaccard(candidate.state[1], previous.state[1])
-                >= self.beam_signal_similarity_threshold
-                and _packed_jaccard(candidate.state[2], previous.state[2])
-                >= self.beam_background_similarity_threshold
-                and _packed_jaccard(candidate.state[3], previous.state[3])
-                >= self.beam_signal_similarity_threshold
-                and _packed_jaccard(candidate.state[4], previous.state[4])
-                >= self.beam_background_similarity_threshold
-                for previous in retained
-            )
+            redundant = any(self._similar(candidate, previous) for previous in retained)
             if redundant:
                 continue
             retained.append(candidate)
@@ -231,6 +235,16 @@ class BeamRuleGenerator:
         if progress_callback is not None:
             progress_callback(processed, len(candidates), len(retained))
         return retained
+
+    def _similar(self, candidate, previous, signal_similarity=None):
+        return (
+            candidate.object_priority_progress == previous.object_priority_progress
+            and (signal_similarity if signal_similarity is not None else
+                 _packed_jaccard(candidate.state[1], previous.state[1])) >= self.beam_signal_similarity_threshold
+            and _packed_jaccard(candidate.state[2], previous.state[2]) >= self.beam_background_similarity_threshold
+            and _packed_jaccard(candidate.state[3], previous.state[3]) >= self.beam_signal_similarity_threshold
+            and _packed_jaccard(candidate.state[4], previous.state[4]) >= self.beam_background_similarity_threshold
+        )
 
     def _candidate_cuts(self, parent, signal, background):
         result: list[Cut] = []
@@ -358,6 +372,59 @@ def _packed_jaccard(left, right):
     intersection = int(_BYTE_POPCOUNT[left & right].sum(dtype=np.int64))
     union = int(_BYTE_POPCOUNT[left | right].sum(dtype=np.int64))
     return intersection / union if union else 1.0
+
+
+def _retain_novel(candidates, limit, weight, *, signal_mask, redundant=None, progress_callback=None):
+    """Greedy score + weight * (1 - max signal Jaccard), with stable ties.
+
+    Cached heap values are upper bounds: positive novelty bonuses can only
+    decrease as selections grow. Only contenders need their overlap refreshed.
+    Negative weights remain meaningful; their bounds restart after selection.
+    Masks stay packed, and intrinsic candidate scores are never changed.
+    """
+    scores = [candidate.score for candidate in candidates]
+    masks = [signal_mask(candidate) for candidate in candidates]
+    heap = [(-score - max(weight, 0.), index) for index, score in enumerate(scores)]
+    heapify(heap)
+    maximum = np.zeros(len(candidates))
+    checked = np.zeros(len(candidates), dtype=int)
+    available = np.ones(len(candidates), dtype=bool)
+    visited = np.zeros(len(candidates), dtype=bool)
+    retained, selected_indices = [], []
+    processed = 0
+    while heap and len(retained) < limit:
+        _, index = heappop(heap)
+        candidate = candidates[index]
+        if not visited[index]:
+            visited[index] = True
+            processed += 1
+        if progress_callback is not None:
+            progress_callback(processed, len(candidates), len(retained))
+        blocked = False
+        for position in range(checked[index], len(retained)):
+            similarity = _packed_jaccard(masks[index], masks[selected_indices[position]])
+            maximum[index] = max(maximum[index], similarity)
+            if redundant is not None and redundant(candidate, retained[position], similarity):
+                blocked = True
+                break
+        checked[index] = len(retained)
+        if blocked:
+            available[index] = False
+            continue
+        utility = scores[index] + weight * (1. - maximum[index])
+        key = (-utility, index)
+        if heap and key > heap[0]:
+            heappush(heap, key)
+            continue
+        retained.append(candidate)
+        selected_indices.append(index)
+        available[index] = False
+        if weight < 0:
+            heap = [(-scores[i], i) for i in range(len(candidates)) if available[i]]
+            heapify(heap)
+    if progress_callback is not None:
+        progress_callback(processed, len(candidates), len(retained))
+    return retained
 
 
 def _canonical_key(cuts):

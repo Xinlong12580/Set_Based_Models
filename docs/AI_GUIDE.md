@@ -25,15 +25,36 @@ copies; screenshots and console logs are not the authoritative numeric record.
 | Direct raw Parquet conversion | `python -m raw_event_conversion`; [converter guide](../raw_event_conversion/README.md) |
 | Optional pair tensor | Conversion flag `--with-pair-tensor`; [pair guide](../raw_event_conversion/PAIRS.md) |
 | Reference/mixture construction | `scripts/make_reference_anomalous.py` |
-| Flexible ERL study runner | `casual_tests/run_ERL_Gini_nested.py`; [input modes](../casual_tests/ERL_GINI_INPUT_MODES.md) |
-| Event-only EDT study runner | `casual_tests/run_EDT_event_only.py` |
-| Core models | `src/set_based_models/decision_tree/` and `src/set_based_models/rule_list/` |
+| Flexible ERL trainer | `casual_tests/train_ERL.py`; [input modes and training outputs](../casual_tests/ERL_GINI_INPUT_MODES.md) |
+| Train candidates, prune only on validation | `casual_tests/train_ERL_validation.py`; [workflow](../casual_tests/ERL_VALIDATION.md) |
+| Scan searches, merge, and select on validation | `casual_tests/train_ERL.py`, `validate_ERL.py`, and wrapper `scan_ERL.py`; [workflow](../casual_tests/ERL_SCAN.md) |
+| Event-only EDT study runner (optional extension) | `casual_tests/run_EDT_event_only.py` |
+| Core ERL and shared utilities | `src/set_based_models/rule_list/` and `src/set_based_models/core/` |
+| Optional EDT implementation | `extensions/edt/src/set_based_edt/`; [extension guide](../extensions/edt/README.md) |
 | Common report writers | `casual_tests/_quantitative_reporting.py`, `casual_tests/_event_only_reporting.py` |
+| EDT-only report assembly | `casual_tests/_edt_reporting.py` (loaded only for EDT runs) |
 | ERL final selection | `src/set_based_models/rule_list/pruning.py` |
+| Optional beam novelty reward | `beam_novelty_weight`; [selection policy](ERL_BEAM_NOVELTY.md) |
+| Core ERL save/load and frozen inference | `ExistentialRuleList.save/load/predict/evaluate`; [artifact guide](ERL_MODEL_FORMAT.md) |
+| Pool independent ERL searches | `ExistentialRuleList.merge/load_many`; [pooling and provenance](ERL_MODEL_FORMAT.md#pool-candidates-from-multiple-searches) |
+| Saved rule overlaps | `signal_jaccard_`, `background_jaccard_`; [event matrices and merge assumptions](ERL_MODEL_FORMAT.md#saved-event-jaccard-matrices) |
+| Refresh fixed candidates for validation pruning | `ExistentialRuleList.recalculate_candidates`, then `prune_candidates`; [validation workflow](ERL_MODEL_FORMAT.md#recalculate-candidates-before-validation-based-pruning) |
+| Shorten rules on validation before final selection | `ExistentialRuleList.self_prune_candidates` returns a new pool; [guard-aware self-pruning](ERL_MODEL_FORMAT.md#shorten-each-rule-before-final-pruning) |
 | Acceptance plots | `scripts/plot_acceptance_report.py`, `scripts/plot_all_reports.sh` |
 | Source-field limitations | [Impact-parameter notes](../raw_event_conversion/IMPACT_PARAMETERS.md) |
 
-Older runners and the `data_conversion/` pipeline remain in the worktree.
+Older runners are archived under `casual_tests/stale/`; see the
+[runner directory guide](../casual_tests/README.md). The current ERL runner uses
+`casual_tests/_erl_common.py` for its scoring function and argument helpers,
+and does not import the archive. The older `data_conversion/` pipeline also
+remains in the worktree.
+The trainer saves a core `.training.model.json` and a separate `.training.report.json`
+under `training_outputs/`. Only the latter is an analysis report; the model
+artifact is loaded by `ExistentialRuleList.load()` for inference. Acceptances
+in the report are training statistics, not independent test performance.
+The single-run `train_ERL_validation.py` wrapper delegates to the trainer and
+validator with independent beam/pruning penalties. Its `.validation.*` outputs
+contain refreshed statistics and final selection; validation is used for selection.
 Do not assume they use the flexible runner's input handling, defaults, guards,
 or pruning policies. Identify a report's `model`, configuration, feature schemas,
 and source version before comparing runs. Current defaults are not evidence of

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from casual_tests import run_ERL_Gini_nested as runner
+from casual_tests import train_ERL as runner
 from casual_tests._erl_progress import SearchProgress
 from set_based_models import ExistentialRuleList, ObservableSpec, TPRFPRRuleScore
 from tests.test_pair_erl_runner import fixture

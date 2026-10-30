@@ -1,7 +1,7 @@
 ---
 title: "Interpretable Rule Discovery for Anomaly-Selected Events"
 subtitle: "A practical introduction to ERL and our trigger-study workflow"
-date: "Implementation snapshot: 11 October 2026"
+date: "Implementation snapshot: 22 October 2026"
 lang: en
 papersize: a4
 fontsize: 11pt
@@ -389,19 +389,19 @@ production-specific limitations documented in the detailed report.
 
 # Running the study and reading its output
 
-The current flexible script is `casual_tests/run_ERL_Gini_nested.py`.
+The current flexible script is `casual_tests/train_ERL.py`.
 The following example assumes compatible reference and mixture PT files already
 exist. It illustrates an event-only run; it is not a universal recommended tune.
 
 ```bash
-python casual_tests/run_ERL_Gini_nested.py \
+python casual_tests/train_ERL.py \
   --signal data/example_mixture/anomalous.pt \
   --background data/example_mixture/reference.pt \
   --event-only \
   --reference-penalty 1 \
   --stricter-score-improvement 0.001 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40 \
-  --report reports/ERL_intro_example.txt
+  --output-prefix training_outputs/ERL_intro_example
 ```
 
 Remove `--event-only` to use both tensors; replace it with `--object-only`
@@ -413,8 +413,10 @@ and `type_id_2`. Add `--require-complete-priority` to require the entire list in
 retained rules. Quote directed entries, such as `'pt:>'`, to avoid shell
 redirection. `--progress` displays search activity on the terminal.
 Beam and final similarity require their explicit enable flags; they are off
-in this example. Existing reports require
-`--overwrite-report` before replacement.
+in this example. Training saves two separate JSON files: `.model.json` can be
+loaded later to apply the learned rules, while `.report.json` contains training
+statistics and explanations. Existing outputs require `--overwrite-output`
+before replacement. These reports do not measure independent test performance.
 
 ## Know the runner defaults
 

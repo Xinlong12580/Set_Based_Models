@@ -18,15 +18,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from casual_tests import run_ERL_Gini_nested as runner
-from casual_tests.run_ERL_Gini_nested_event_only import main as event_main
+from casual_tests.stale import train_ERL_pruned as runner
+from casual_tests.stale.run_ERL_Gini_nested_event_only import main as event_main
 from raw_event_conversion.objects import OBJECT_COLUMNS, object_feature_schema
 from set_based_models import EventCut, ExistentialRuleList
 from scripts.plot_acceptance_report import load_report, select_paths
 
 
 def fixture(signal):
-    objects = torch.zeros((40, 22, 20), dtype=torch.float32)
+    objects = torch.zeros((40, 22, len(OBJECT_COLUMNS)), dtype=torch.float32)
     objects[:, 0, 0] = 5
     if signal:
         objects[:15, 0, 0] = 50
@@ -95,7 +95,7 @@ class FlexibleERLRunnerTests(unittest.TestCase):
             report, log = self.run_cli(["--print-top", "0"])
         model = captured[0]
         self.assertEqual(model.input_mode_, "combined")
-        self.assertEqual(len(model.observables), 20)
+        self.assertEqual(len(model.observables), len(OBJECT_COLUMNS))
         self.assertEqual(len(model.event_observables), 3)
         records = report["results"]["rules"]
         self.assertTrue(records)
@@ -109,7 +109,7 @@ class FlexibleERLRunnerTests(unittest.TestCase):
             self.assertTrue(record["logical_pruning_applicable"])
             if any(not isinstance(c, EventCut) for c in rule.cuts):
                 self.assertIn("same slot", record["simplified_rule"])
-        self.assertEqual(report["inputs"]["signal"]["object_shape"], [40, 22, 20])
+        self.assertEqual(report["inputs"]["signal"]["object_shape"], [40, 22, len(OBJECT_COLUMNS)])
         self.assertIn("[slot]", log)
         self.assertIn("[event]", log)
         self.assertIn("same-slot predicates and minimum counts are respected", log)
@@ -355,9 +355,9 @@ class FlexibleERLRunnerTests(unittest.TestCase):
                      "--print-reference-top", "0", "--print-pruned-top", "1"]
         with patch.object(runner.Path, "cwd", return_value=self.directory), redirect_stdout(io.StringIO()):
             runner.main(arguments)
-        defaults = list((self.directory / "reports").glob("*.txt"))
+        defaults = list((self.directory / "training_outputs").glob("*.report.json"))
         self.assertEqual(len(defaults), 1)
-        self.assertTrue(defaults[0].name.endswith("_basic_objects_object_only.txt"))
+        self.assertTrue(defaults[0].name.endswith("_basic_objects_object_only.report.json"))
 
     def test_full_runner_guards_object_measurements_and_reports_policy(self):
         # All mass flags are false in this fixture; changing placeholder mass
@@ -543,6 +543,17 @@ class FlexibleERLRunnerTests(unittest.TestCase):
         report, _ = self.run_cli(["--object-only"])
         self.assertEqual(len(report["object_observables"]), 4)
 
+    def test_legacy_twenty_column_inputs_remain_supported(self):
+        for path, signal in ((self.signal, True), (self.background, False)):
+            sample = fixture(signal)
+            sample["obj"] = sample["obj"][..., :20]
+            sample["obj_columns"] = sample["obj_columns"][:20]
+            sample["obj_feature_schema"] = sample["obj_feature_schema"][:20]
+            torch.save(sample, path)
+        report, _ = self.run_cli(["--object-only"])
+        self.assertEqual(len(report["object_observables"]), 20)
+        self.assertTrue(report["results"]["rules"])
+
     def test_slot_mask_uses_named_pt_column_not_fixed_index(self):
         raw = fixture(True)
         order = [1, 0, *range(2, 20)]
@@ -694,7 +705,7 @@ class FlexibleERLRunnerTests(unittest.TestCase):
 
     def test_script_runs_from_outside_repository_and_default_name_contains_mode(self):
         result = subprocess.run(
-            [sys.executable, str(ROOT / "casual_tests/run_ERL_Gini_nested.py"),
+            [sys.executable, str(ROOT / "casual_tests/stale/train_ERL_pruned.py"),
              *self.args(["--object-only"])], cwd=self.directory,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -703,9 +714,9 @@ class FlexibleERLRunnerTests(unittest.TestCase):
                      "--print-pruned-top", "1"]
         with patch.object(runner.Path, "cwd", return_value=self.directory), redirect_stdout(io.StringIO()):
             runner.main(arguments)
-        defaults = list((self.directory / "reports").glob("*.txt"))
+        defaults = list((self.directory / "training_outputs").glob("*.report.json"))
         self.assertEqual(len(defaults), 1)
-        self.assertTrue(defaults[0].name.endswith("_event_only.txt"))
+        self.assertTrue(defaults[0].name.endswith("_event_only.report.json"))
 
 
 if __name__ == "__main__":

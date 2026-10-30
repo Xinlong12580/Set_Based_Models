@@ -1,13 +1,30 @@
 # Set-based models
 
-NumPy implementations of an existential decision tree and beam-search rule
-discovery for binary signal/background classification. Rules can combine cuts
-on individual objects with cuts on whole events.
+NumPy beam-search rule discovery for binary signal/background classification,
+with an optional existential decision-tree extension. Rules can combine cuts
+on individual objects with cuts on whole events. ERL, conversion, reporting,
+and plotting work without EDT.
 
-## Complete workflow: raw Parquet to an ERL test
+## Optional EDT extension
+
+The default library contains the shared core and ERL. EDT is a separate package:
+
+```bash
+python -m pip install -e .                 # Core + ERL (NumPy)
+python -m pip install -e extensions/edt    # Optional EDT
+```
+
+New EDT code should use `from set_based_edt import ExistentialDecisionTree`.
+Historical explicit EDT imports remain lazy compatibility aliases when the
+extension is installed. `from set_based_models import *` exports core/ERL only.
+Shared gains such as `gini_gain` remain available without EDT. See the
+[extension guide](extensions/edt/README.md) for source-only use, compatibility,
+testing, and removal. Existing runner arguments and algorithms are unchanged.
+
+## Complete workflow: raw Parquet to ERL training
 
 This example converts minbias and ggHgammagamma samples, creates a contaminated
-anomalous sample, discovers rules with the latest ERL runner, and plots them.
+anomalous sample, trains an ERL model, saves its training report, and plots it.
 It uses only this repository: neither `aidascoutrepo` nor stage1/stage2
 regionization is required.
 
@@ -63,10 +80,13 @@ python -m raw_event_conversion \
 ```
 
 Each PT file contains real object tensors, event features, schemas, process
-labels and provenance. Default shapes are `obj [N,22,20]` and
+labels and provenance. Default shapes are `obj [N,22,34]` and
 `event_features [N,193]`. Event summaries use the full stored collections
 before object-slot caps. Labels 1 and 2 are diagnostic process identifiers;
 they do not define the classes optimized by ERL.
+Objects include decoded jet `BTag`/`BTagPhys` working-point decisions with
+validity guards. Optional pairs (`--with-pair-tensor`) copy them for both
+members and have shape `[N,231,96]`; no truth-flavour input is added.
 
 ### 3. Build reference and anomalous datasets
 
@@ -88,26 +108,63 @@ python scripts/make_reference_anomalous.py \
 To study another process, replace the signal raw files and use a distinct
 output directory; the conversion, mixer and runner are not specific to Higgs.
 
-### 4. Run the latest ERL discovery example
-
-Start with event-only inputs. This exercises penalized Gini scoring, built-in
-logical pruning and both similarity stages:
+For conversions larger than 10,000 events, pass the indexed PT chunks using
+quoted wildcards (or list several files explicitly):
 
 ```bash
-python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/example_ggHgammagamma/mixture/anomalous.pt \
-  --background data/example_ggHgammagamma/mixture/reference.pt \
+python scripts/make_reference_anomalous.py \
+  --background 'data/SIGNAL/train_minbias_*.pt' \
+  --signal 'data/SIGNAL/train_ggHgammagamma_*.pt' \
+  --output-dir data/SIGNAL/ggHgammagamma_train_mixture \
+  --reference-count 5000 --background-count 4500 --signal-count 500 --seed 42
+```
+
+Each class is sampled uniformly over its combined event pool. Source chunks
+are loaded one at a time; the full input pool is not concatenated in memory.
+For multi-file inputs, `source_file_index` indexes `source_files` and
+`source_index` is the row within that PT. Keep train and test patterns separate.
+Wildcards include every matching file, including any stale chunks from earlier
+runs; compare the matches with the converter's `.chunks.json` index.
+
+### 4. Train ERL and select rules on validation
+
+Start with event-only inputs. This exercises penalized Gini scoring, built-in
+logical pruning and both similarity stages. Split the tensors first:
+
+```bash
+mkdir -p training_outputs
+python scripts/split_train_validation.py \
+  --input-dir data/example_ggHgammagamma/mixture --train-fraction 0.5
+python casual_tests/train_ERL_validation.py \
+  --signal data/example_ggHgammagamma/mixture/anomalous_train.pt \
+  --background data/example_ggHgammagamma/mixture/reference_train.pt \
   --event-only \
-  --reference-penalty 1 --stricter-score-improvement 0.001 \
+  --beam-reference-penalty 1 --pruning-reference-penalty 1 \
+  --stricter-score-improvement 0.001 \
   --beam-similarity-filter --final-similarity-filter \
   --signal-similarity-threshold 0.9 --background-similarity-threshold 0.9 \
-  --report reports/ERL_example_ggHgammagamma_event_only.txt \
-  --overwrite-report | tee logs/ERL_example_ggHgammagamma_event_only.log
+  --output-prefix training_outputs/ERL_example_ggHgammagamma_event_only \
+  --overwrite-output 2>&1 | tee training_outputs/ERL_example_ggHgammagamma_event_only.training.log
 ```
 
 These are demonstration settings, not a universally optimal physics tune.
-The report is **JSON despite its `.txt` extension**. It records candidates,
-scores, acceptances, configuration and final-pruning decisions.
+The current ERL runners also accept `--score excess` for
+`max(0, mixture_acceptance - reference_acceptance) / sqrt(reference_acceptance + delta)`
+or `--score ratio` for `mixture_acceptance / sqrt(reference_acceptance + delta)`.
+Set `--score-delta` / `--delta` (default 0.001); Gini remains the default.
+Wrappers inherit a uniform training choice for validation, with independent
+`--validation-score` / `--validation-score-delta` overrides. See the
+[scoring guide](docs/ERL_SCORING.md).
+The training outputs share the chosen prefix:
+
+- `.training.model.json` and `.training.report.json`: unpruned candidates and training statistics.
+- `.validation.model.json` and `.validation.report.json`: refreshed statistics, selected rules, and pruning decisions.
+- `.training.log`: console output captured by `tee`.
+
+Without `--output-prefix`, the trainer chooses a descriptive name under
+`training_outputs/`. Existing model/report files are protected unless
+`--overwrite-output` is given. `train_ERL.py` runs only the first stage;
+`train_ERL_validation.py` calls it once and then calls `validate_ERL.py`.
 
 - For **combined** discovery, remove `--event-only`; optionally add
   `--object-cut-priority type_id pt`.
@@ -124,19 +181,19 @@ scores, acceptances, configuration and final-pruning decisions.
   `| tee run.log` still captures only stdout. Redirect `2>&1` to capture progress
   as well; non-terminal output uses occasional plain lines rather than a live
   bar. Progress covers candidate generation, not final pruning or report writing.
-- Use different report/log names for each configuration. Object priority
+- Use different training-output prefixes for each configuration. Object priority
   cannot be used in event-only mode.
 - To request a nominal per-rule rate limit, add
   `--max-trigger-rate-khz 40 --input-rate-mhz 40`. This means reference
-  acceptance at most 0.1%, or only two observed events in this reference.
+  acceptance at most 0.1%, applied to the validation reference.
   The limit does not constrain the combined OR rate or include uncertainty.
 
 ### 5. Plot the discovered rules
 
 ```bash
 python scripts/plot_acceptance_report.py \
-  reports/ERL_example_ggHgammagamma_event_only.txt \
-  --output reports/ERL_example_ggHgammagamma_event_only_acceptance.png \
+  training_outputs/ERL_example_ggHgammagamma_event_only.validation.report.json \
+  --output training_outputs/ERL_example_ggHgammagamma_event_only.acceptance.png \
   --top 10 --overwrite
 ```
 
@@ -144,6 +201,46 @@ The plot shows retained, mixture-enriched rules: reference acceptance on the
 horizontal axis, mixture acceptance vertically, and rule definitions alongside.
 If no rules satisfy that display selection, use `--rules all --direction all`
 to inspect the candidate pool rather than assuming discovery succeeded.
+
+To map rule overlaps onto a 2D plane using the model's saved mixture Jaccard
+matrix:
+
+```bash
+python scripts/plot_erl_mds.py \
+  training_outputs/ERL_example_ggHgammagamma_event_only.validation.model.json
+```
+
+This saves a `.mds.png` plot and a `.mds.json` layout containing coordinates,
+rule IDs and fit diagnostics. Pass the layout JSON back to the same script to
+replot without optimization. Optional `--clusters clusters.json` supplies
+cluster indices keyed by rule ID; all rules share cluster 0 by default.
+See [the MDS guide](docs/ERL_MDS.md) for selection and optimizer controls.
+
+To cluster the original rule distances and color the MDS map:
+
+```bash
+python scripts/cluster_erl_rules.py \
+  training_outputs/ERL_example_ggHgammagamma_event_only.validation.model.json \
+  --distance-threshold 0.5 --max-iter 2000
+```
+
+Complete linkage keeps every within-cluster Jaccard similarity at least 0.5
+with this cutoff and retains isolated rules as singleton clusters. Pass an
+existing `.mds.json` layout instead of the model to reuse its coordinates.
+See [the clustering guide](docs/ERL_CLUSTERING.md) for outputs and controls.
+
+To inspect the saved model's top retained rules without loading tensors:
+
+```bash
+python scripts/print_erl_model.py \
+  training_outputs/ERL_example_ggHgammagamma_event_only.validation.model.json \
+  --top 10 --verbosity 1
+```
+
+Use `--verbosity 0` for a summary, `2` for cut-by-cut statistics and provenance,
+or `3` for full configuration and schemas. `--all-candidates` includes discarded
+rules; `--rule-ids 548` inspects a specific ID. See the
+[printer guide](docs/ERL_PRINTING.md).
 
 For mixtures converted with `--with-pair-tensor`, inspect the diphoton mass
 distribution directly (no ERL fit is required):
@@ -224,11 +321,14 @@ exclude zero padding.
 
 ## Event and slot cuts
 
+The tree portion of this example requires the optional EDT extension.
+
 ```python
 from set_based_models import (
-    ExistentialDecisionTree, ExistentialRuleList, ObservableSpec,
+    ExistentialRuleList, ObservableSpec,
     TPRFPRRuleScore, gini_gain,
 )
+from set_based_edt import ExistentialDecisionTree
 
 observables = (
     ObservableSpec("pt", "continuous"),
@@ -339,6 +439,16 @@ Packing reduces mask payload approximately eightfold, but input arrays,
 validity arrays and other allocations still require RAM. Candidate generation
 still precedes beam selection: beam width is not a bound on expansion count.
 
+## Optional beam novelty reward
+
+Set `beam_novelty_weight=beta` in the core, or add `--beam-novelty-weight 0.01`
+(`--novelty-beta`) to either trainer. Positive beta rewards candidates whose
+anomaly-event selections differ from the already selected beam. The same policy
+protects diversity if the final candidate pool must be capped. Zero preserves
+the existing selection behavior; intrinsic scores and final pruning are unchanged.
+The reward can be combined with hard similarity filtering. It requires retraining
+and may increase runtime. See [the novelty guide](docs/ERL_BEAM_NOVELTY.md).
+
 ## ERL object-cut priority
 
 An optional ordered list restricts the sequence of object cuts:
@@ -409,11 +519,11 @@ not display-simplified predicates.
 The flexible runner exposes this as:
 
 ```bash
-python casual_tests/run_ERL_Gini_nested.py \
+python casual_tests/train_ERL.py \
   --signal data/ggHgammagamma_mixture/anomalous.pt \
   --background data/ggHgammagamma_mixture/reference.pt \
   --object-only --basic-object-features --object-cut-priority type_id pt \
-  --report reports/ERL_ggHgammagamma_priority_objects.txt
+  --output-prefix training_outputs/ERL_ggHgammagamma_priority_objects
 ```
 
 Without `--object-only`, event cuts can interleave with the ordered object cuts.
@@ -440,6 +550,121 @@ The final logical-pruning threshold accepts negative values. For example,
 less than 0.008 relative to applicable retained looser rules. Positive values
 require improvement; zero requires a strictly better score. Rate and similarity
 filters still apply independently, and ranking remains score-based.
+
+## Save, load, and test an ERL model
+
+The core model has a versioned JSON artifact independent of runner reports:
+
+```python
+from set_based_models import ExistentialRuleList
+
+# After fit() and final rule selection:
+model.prune_candidates(similarity_filter=False)
+model.save("models/erl_model.json")
+loaded = ExistentialRuleList.load("models/erl_model.json")
+
+# OR of the final selected rules, evaluated without retraining:
+accepted = loaded.predict(test_objects, slot_mask=test_mask,
+                          event_features=test_events)
+# Event-only models: loaded.predict(event_features=test_events)
+# Specific candidates: loaded.predict(..., rule_ids=[0, 2])
+```
+
+Schemas, validity guards, cut histories, statistics, final selections, and
+pruning records are retained, together with candidate event Jaccard matrices;
+training tensors/masks and scoring callables are
+not. Existing model files are overwritten with a warning; pass
+`overwrite=False` to protect them. Before final pruning, prediction requires
+explicit rule IDs. `casual_tests/train_ERL.py` saves unpruned candidates;
+`train_ERL_validation.py` additionally saves a validation-selected model. For example:
+
+```python
+loaded = ExistentialRuleList.load("training_outputs/ERL_example_ggHgammagamma_event_only.validation.model.json")
+accepted = loaded.predict(event_features=test_events)
+```
+See [the model format and inference guide](docs/ERL_MODEL_FORMAT.md) for held-out
+evaluation, input alignment, serialization details, and re-fitting.
+
+For validation-based final selection, refresh the fixed candidate pool first:
+
+```python
+loaded.recalculate_candidates(
+    signal_event_features=validation_mixture_events,
+    background_event_features=validation_reference_events,
+    scoring_function=my_score,
+)
+loaded.prune_candidates(similarity_filter=True, stricter_score_improvement=0.001)
+loaded.save("models/erl_validation_selected.json")
+```
+
+This event-only example recomputes every prefix's statistics/score and each
+rule's selection masks, without changing cuts or IDs. Object/pair/mixed models
+also accept the same object arrays, masks and weights as `fit()`. Recalculation
+replaces active measurements and clears the previous final selection; save the
+training model first to preserve it. Ordinary evaluation remains read-only.
+The trainer does not automatically make or use a validation split.
+
+To shorten individual rules before final list selection, create a new pool:
+
+```python
+shortened = loaded.self_prune_candidates(
+    signal_event_features=validation_mixture_events,
+    background_event_features=validation_reference_events,
+    scoring_function=my_score,
+    stricter_score_improvement=0.001,
+    max_reference_acceptance=0.001,
+)
+shortened.prune_candidates(similarity_filter=True, stricter_score_improvement=0.001,
+                           max_reference_acceptance=0.001)
+shortened.save("models/erl_shortened_selected.json")
+```
+
+This evaluates every nonempty cut subset, including guard-only alternatives,
+and prunes each rule family before pooling. The source model stays unchanged.
+See [the self-pruning guide](docs/ERL_MODEL_FORMAT.md#shorten-each-rule-before-final-pruning)
+for object inputs, source priorities, parent provenance and memory options.
+
+Multiple searches can supply candidates for one validation-selected model:
+
+```python
+combined = ExistentialRuleList.load_many([
+    "models/run_a.training.model.json",
+    "models/run_b.training.model.json",
+], scoring_function=my_score)
+combined.recalculate_candidates(
+    signal_event_features=validation_mixture_events,
+    background_event_features=validation_reference_events,
+)
+combined.prune_candidates(similarity_filter=True, stricter_score_improvement=0.001)
+combined.save("models/combined.validation.model.json")
+```
+
+Use `ExistentialRuleList.merge([model_a, model_b])` for models already in memory,
+and supply a common scorer during recalculation. Merging keeps every candidate,
+assigns new IDs, preserves source configurations and rule origins, and requires
+matching ordered schemas. Pruning requires fresh common statistics; source models
+stay unchanged. See [the pooling guide](docs/ERL_MODEL_FORMAT.md#pool-candidates-from-multiple-searches)
+for per-source priority completion and provenance details.
+
+`signal_jaccard_` and `background_jaccard_` contain the event-overlap matrices,
+indexed by candidate rule ID, and are embedded in saved model JSON. Loaded
+models can repeat final similarity pruning without event masks. Merging builds
+block-diagonal matrices with assumed zero similarity between input models;
+validation recalculation replaces those assumptions with full measured overlaps.
+See [the matrix guide](docs/ERL_MODEL_FORMAT.md#saved-event-jaccard-matrices).
+
+The [scan workflow](casual_tests/ERL_SCAN.md) provides separate training and
+validation runners plus `casual_tests/scan_ERL.py` to call both. The wrapper accepts
+lists of beam parameters, including novelty and beam similarity thresholds, and
+calls the trainer with one scalar configuration at a time. Final pruning uses
+its own settings and a common validation score.
+Add `--self-prune` to shorten each rule on validation before final selection;
+`--self-prune-score-improvement` optionally overrides the local improvement
+threshold. The step 5 quick runner enables this stage.
+Use `scan_ERL.py --train-only` to save a grid without validation, or
+`--validate-only` to reuse models inferred from the same output prefix without
+training again. Step 5 forwards these flags, for example
+`bash quick_runners/05_train_SIG_ERL.sh --validate-only`.
 
 ## Automatic validity guards
 
@@ -474,7 +699,8 @@ dataset-dependent missingness or validate unflagged measurements.
 ## Running
 
 The library requires NumPy; set `PYTHONPATH=src` to import it from this checkout.
-The synthetic example runs without a dataset:
+The synthetic example runs without a dataset; it includes EDT only when the
+optional extension is available:
 
 ```bash
 python casual_tests/run_mixed_observables.py
@@ -486,6 +712,14 @@ With pytest installed, run the tests with:
 PYTHONPATH=src python -m pytest -q
 ```
 
+EDT-dependent tests skip when the extension is absent. To exercise both models
+directly from source, use `PYTHONPATH=src:extensions/edt/src` instead.
+
 The other scripts in `casual_tests` additionally use PyTorch and external HEP
 datasets. The older `set_based_dt` imports remain available as compatibility
-aliases.
+aliases requiring the optional EDT extension.
+
+See [the runner directory guide](casual_tests/README.md) for the current entry
+points and shared helpers. Superseded runners, old usage notes, logs, and sample
+data are archived under `casual_tests/stale/`; the current ERL runner does not
+depend on that archive.

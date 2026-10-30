@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
 
+pytest.importorskip("set_based_edt", reason="EDT is an optional extension")
+
 from set_based_dt import (
     Branch, CountAggregation, ExistentialDecisionTree, Node,
     ObservableSpec, ThresholdCut,

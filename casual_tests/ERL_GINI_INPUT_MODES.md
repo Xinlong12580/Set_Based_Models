@@ -1,41 +1,49 @@
-# Flexible event/object Gini ERL runner
+# Flexible event/object Gini ERL trainer
 
-`run_ERL_Gini_nested.py` loads object and event tensors by default and supports
+`train_ERL.py` loads object and event tensors by default and supports
 native event-only or object-only operation. It can replace the single-object
-tensor with a separate pair tensor and directly uses the core ERL pruning API.
+tensor with a separate pair tensor. It fits one scalar configuration and saves
+unpruned candidates through the core model saver. `train_ERL_validation.py` wraps
+this trainer and `validate_ERL.py` to select rules on validation with a separate
+score. Tensor loading and report construction are shared in `_erl_reporting.py`.
 
 ## Commands
+
+`--beam-novelty-weight BETA` (alias `--novelty-beta`, default 0) optionally rewards
+distinct mixture-event masks during beam selection and candidate capping. It can
+be combined with `--beam-similarity-filter`; intrinsic scores and final pruning
+are unchanged. See [the novelty guide](../docs/ERL_BEAM_NOVELTY.md).
 
 Run from the repository root in the `hep` environment. Both input files must
 have compatible schemas for the enabled features.
 
 ```bash
 # Both tensors (default).
-python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/ggHgammagamma_mixture/anomalous.pt \
-  --background data/ggHgammagamma_mixture/reference.pt \
-  --report reports/ERL_ggHgammagamma_combined.txt \
-  --reference-penalty 10 \
+python casual_tests/train_ERL_validation.py \
+  --signal data/SIGNAL_train_ggHgammagamma_mixture/anomalous_train.pt \
+  --background data/SIGNAL_train_ggHgammagamma_mixture/reference_train.pt \
+  --output-prefix training_outputs/ERL_ggHgammagamma_combined \
+  --beam-reference-penalty 10 --pruning-reference-penalty 10 \
   --stricter-score-improvement 0.01 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40
 ```
 
 For event-only input, add `--no-object-features` (alias `--event-only`) and
-choose a distinct report, such as `reports/ERL_ggHgammagamma_event_only.txt`.
+choose a distinct prefix, such as `training_outputs/ERL_ggHgammagamma_event_only`.
 For object-only input, add `--no-event-features` (alias `--object-only`) and
-choose `reports/ERL_ggHgammagamma_object_only.txt`. Disabling both is an error.
+choose `training_outputs/ERL_ggHgammagamma_object_only`. Disabling both is an error.
 Add **`--basic-object-features`** to use only `pt`, `eta`, `phi`, and `type_id`
 from the object tensor. This works in combined or object-only mode and leaves
 event inputs unchanged. It cannot be combined with `--event-only`. The default
 still uses every object column. For example:
 
 ```bash
-python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/ggHgammagamma_mixture/anomalous.pt \
-  --background data/ggHgammagamma_mixture/reference.pt \
-  --report reports/ERL_ggHgammagamma_basic_objects.txt \
+python casual_tests/train_ERL_validation.py \
+  --signal data/SIGNAL_train_ggHgammagamma_mixture/anomalous_train.pt \
+  --background data/SIGNAL_train_ggHgammagamma_mixture/reference_train.pt \
+  --output-prefix training_outputs/ERL_ggHgammagamma_basic_objects \
   --object-only --basic-object-features \
-  --reference-penalty 0 --stricter-score-improvement 0.01 \
+  --beam-reference-penalty 0 --pruning-reference-penalty 0 --stricter-score-improvement 0.01 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40
 ```
 
@@ -111,13 +119,34 @@ The report also stores `configuration.require_complete_priority`, per-rule
 The example penalty and score-improvement values are explicit choices, not
 defaults or universally optimized values.
 
-Without `--report`, the output name is
-`reports/ERL_Gini_nested_flexible_<sample-parent>_<signal-stem>_<mode>.txt`.
-Modes are `combined`, `event_only`, and `object_only`. Existing reports are
-protected unless `--overwrite-report` is supplied. Reports cannot overwrite
-input tensors or their hard-link aliases, and report symlinks are rejected.
-Basic-object mode adds `_basic_objects` before the mode suffix in the default
-report filename. Reports/logs identify the selected object features.
+## Training outputs
+
+The default prefix is `training_outputs/ERL_<sample-parent>_<mode>`.
+Modes are `combined`, `event_only`, and `object_only`; pair/basic modes insert
+`_pairs`/`_basic_objects` before the mode. `--output-prefix PATH` overrides it.
+
+- `<prefix>.training.model.json` contains all unpruned candidates and training
+  statistics. Load it with `ExistentialRuleList.load()`; prediction before final
+  selection requires explicit rule IDs.
+- `<prefix>.training.report.json` is the plot-compatible report, with candidates
+  marked `not_pruned`. Use `--rules all` when plotting it.
+- The single-run wrapper also saves `<prefix>.validation.model.json` and
+  `<prefix>.validation.report.json`, with refreshed statistics and final pruning.
+  The validation model supports default inference on selected rules.
+- Capture console output with `2>&1 | tee <prefix>.training.log`; create its
+  parent directory before the command. The Python trainer does not redirect stdout.
+
+`--model FILE` and `--training-report FILE` override individual training paths.
+`--report` is a compatibility alias. With only a report override and no prefix,
+its base name also names the companion model: `study.txt`, `study.report.json`,
+and `study.training.report.json` give `study.training.model.json`.
+
+Both outputs are protected unless `--overwrite-output` is supplied
+(`--overwrite-report` is a compatibility alias permitting both). Model replacement
+uses the core saver and warns. Model and report paths must differ and must not
+resolve to either input tensor. Training statistics describe training; validation
+statistics are used for selection, not independent testing.
+See [core model saving and inference](../docs/ERL_MODEL_FORMAT.md).
 
 ### Pair inputs
 
@@ -147,7 +176,7 @@ The default report name identifies pair mode when enabled.
   the training class. Every signal-input row is the mixture class.
 - Enabled objects require `obj [N,S,P]`, `obj_columns`, and, for expanded
   columns, `obj_feature_schema`. Column kinds and category labels come from
-  the saved schema, so the current `[N,22,20]` raw-converter tensor is supported
+  the saved schema, so the current `[N,22,34]` raw-converter tensor is supported
   without hardcoded slot caps or a fixed feature count. The known legacy
   `[pt, eta, phi, type_id]` layout also works without a schema, using its old
   jet/muon/electron/photon/MET type mapping.
@@ -209,7 +238,7 @@ Current flexible-runner settings are:
 | Setting | Default |
 | --- | --- |
 | Score | Full-sample weighted Gini gain minus reference penalty times reference acceptance |
-| Reference penalty | 1.0; `--reference-penalty 0` gives pure Gini |
+| Beam / pruning reference penalties | Each defaults to 1; independently use `--beam-reference-penalty` / `--pruning-reference-penalty` on the wrapper |
 | Rule depth / beam width / candidate cap | 4 / 40 / 300 |
 | Numeric threshold cap | 32 per feature/prefix |
 | Minimum mixture acceptance | 0.01 |
@@ -221,16 +250,18 @@ Current flexible-runner settings are:
 | Standalone validity flag cuts | Off; opt in with `--allow-validity-cuts` |
 | Beam similarity | Off; opt in with `--beam-similarity-filter` |
 | Final similarity | Off; opt in with `--final-similarity-filter` |
-| Mixture/reference Jaccard thresholds | Current shared defaults, both 0.1 |
+| Mixture/reference Jaccard thresholds | Beam and final settings are separate; each defaults to 0.1 |
 | Required stricter-rule score improvement | 0; adjustable with `--stricter-score-improvement` |
 | Per-rule rate budget | None; optional `--max-trigger-rate-khz` |
 | Assumed input rate | 40 MHz; adjustable with `--input-rate-mhz` |
 
-The reference penalty acts during beam search. Negative finite scores remain
-eligible. Search size/depth/caps remain constructor settings in the script,
-not CLI flags. Neither penalty nor pruning uses stored process labels.
+The beam reference penalty acts during search; validation recalculates all scores
+with the pruning reference penalty before selection. `--reference-penalty` remains
+an alias for the beam penalty on the trainer/wrappers. Negative finite scores
+remain eligible. Search size/depth/caps are scalar CLI options on the trainer and
+single-run wrapper; `scan_ERL.py` accepts lists. Neither score uses process labels.
 
-The runner directly calls `ExistentialRuleList.prune_candidates`. The order is:
+The validator calls `ExistentialRuleList.prune_candidates`. The order is:
 
 1. Optional priority-completion eligibility.
 2. Optional per-rule reference-acceptance eligibility.
@@ -257,9 +288,11 @@ keeps a stricter rule at this stage if its score drops by less than 0.008
 relative to every applicable retained looser rule. Equivalent-rule merging,
 rate filtering, similarity filtering, and final score ranking are unchanged.
 
-Similarity thresholds use `--signal-similarity-threshold` and
-`--background-similarity-threshold`; they apply to either enabled similarity
-stage. Higher values prune less aggressively. Final similarity can remove
+Beam thresholds use `--beam-signal-similarity-threshold` and
+`--beam-background-similarity-threshold`; final thresholds use their `--final-...`
+counterparts. The old unprefixed similarity flags alias final thresholds and,
+in the single-run wrapper, also supply beam defaults unless explicitly overridden.
+Higher values prune less aggressively. Final similarity can remove
 either looser alternatives or stricter refinements preserved by logical pruning,
 so it is opt-in. Beam similarity also checks surviving slot selections and
 priority progress. Final similarity checks event selections only.

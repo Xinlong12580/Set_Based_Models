@@ -1,0 +1,7 @@
+# Python package build artifacts.
+build/
+dist/
+*.egg-info/
+
+# Generated training models, reports, logs and plots.
+/training_outputs/

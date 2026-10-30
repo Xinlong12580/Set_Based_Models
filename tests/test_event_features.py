@@ -2,12 +2,20 @@
 
 import numpy as np
 import pytest
+from importlib.util import find_spec
 
 from set_based_models import (
-    Branch, CategoryCut, CountAggregation, EventCut, ExistentialDecisionTree,
-    ExistentialRule, ExistentialRuleList, Node, ObservableSpec, RuleStatistics,
+    CategoryCut, CountAggregation, EventCut,
+    ExistentialRule, ExistentialRuleList, ObservableSpec, RuleStatistics,
     RuleStep, RuleUnion, SetInput, ThresholdCut, TPRFPRRuleScore, gini_gain,
 )
+
+EDT_AVAILABLE = find_spec("set_based_edt") is not None
+if EDT_AVAILABLE:
+    from set_based_edt import Branch, ExistentialDecisionTree, Node
+else:
+    ExistentialDecisionTree = None
+requires_edt = pytest.mark.skipif(not EDT_AVAILABLE, reason="EDT is an optional extension")
 
 
 SLOTS = (ObservableSpec("pt", "continuous"), ObservableSpec("btag", "continuous"))
@@ -45,7 +53,9 @@ def test_input_validates_event_shape_schema_and_values():
         SetInput.from_arrays(x, SLOTS, event_features=np.zeros((2, 1)))
 
 
-@pytest.mark.parametrize("model_class", [ExistentialDecisionTree, ExistentialRuleList])
+@pytest.mark.parametrize("model_class", [
+    pytest.param(ExistentialDecisionTree, marks=requires_edt), ExistentialRuleList,
+])
 def test_models_validate_event_schema_at_construction(model_class):
     with pytest.raises(ValueError, match="unique"):
         model_class(SLOTS, event_observables=EVENTS * 2)
@@ -53,6 +63,7 @@ def test_models_validate_event_schema_at_construction(model_class):
         model_class(SLOTS, event_observables=["HT"])
 
 
+@requires_edt
 @pytest.mark.parametrize("spec,signal_events,background_events", [
     (ObservableSpec("HT", "continuous"), [[800.], [900.]], [[100.], [200.]]),
     (ObservableSpec("n_electrons", "ordinal"), [[2], [3]], [[0], [1]]),
@@ -103,6 +114,7 @@ def test_both_models_learn_event_only_cuts_even_without_valid_slots(
         rule.predict(x, slot_mask=slots)
 
 
+@requires_edt
 @pytest.mark.parametrize("event_first", [False, True])
 def test_training_chooses_both_scopes_and_preserves_stored_rule_selections(event_first):
     signal = np.array([[[80., .9]], [[90., .9]]])
@@ -133,6 +145,7 @@ def test_training_chooses_both_scopes_and_preserves_stored_rule_selections(event
                                       rule.predict(background, event_features=background_events))
 
 
+@requires_edt
 def test_event_tree_branches_preserve_surviving_slots_and_exact_paths():
     # Slot -> event -> slot on BOTH event branches. A different low-pt object
     # must not be allowed to satisfy btag after passing the event cut.
@@ -243,6 +256,7 @@ def test_exact_dedup_keeps_event_cuts_with_identical_slot_masks():
     assert len(model.candidate_rules_) == 4
 
 
+@requires_edt
 def test_mixed_training_with_padding_counts_and_weights_matches_execution():
     rng = np.random.default_rng(17)
     data = rng.uniform(size=(30, 4, 2))

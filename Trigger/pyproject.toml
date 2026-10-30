@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "collide2v-trigger"
+version = "0.3.0"
+description = "Serializable trigger menus, evaluation and calibration on COLLIDE-2V tensors"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "torch"]
+
+[project.scripts]
+collide2v-trigger = "collide2v_trigger.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+collide2v_trigger = ["menus/*.json"]

@@ -48,7 +48,7 @@ class PairTensorTests(unittest.TestCase):
                           {"jets": [{"pt": 20}, {"pt": 10}], "photons": [{"pt": 15}]},
                           {kind: [{"pt": 50}] * (cap + 2) for kind, cap in OBJECT_SLOTS.items()}])
         pairs, mask = build_pair_tensor(source)
-        self.assertEqual(pairs.shape, (4, 231, 68))
+        self.assertEqual(pairs.shape, (4, 231, 102))
         self.assertEqual(pairs.dtype, torch.float32)
         self.assertEqual(mask.dtype, torch.bool)
         self.assertEqual(mask.sum(dim=1).tolist(), [0, 0, 3, 231])
@@ -178,7 +178,7 @@ class PairTensorTests(unittest.TestCase):
         from set_based_models import ExistentialRuleList, ObservableSpec, SetInput, ThresholdCut, TPRFPRRuleScore
         schema = pair_feature_schema()
         self.assertEqual([spec["name"] for spec in schema], list(PAIR_COLUMNS))
-        self.assertEqual(len(set(PAIR_COLUMNS)), 68)
+        self.assertEqual(len(set(PAIR_COLUMNS)), 102)
         json.dumps(schema, allow_nan=False)
         specs = tuple(ObservableSpec(spec["name"], spec["kind"], categories=spec.get("categories"),
                                      validity_column=spec.get("validity_column")) for spec in schema)
@@ -239,8 +239,8 @@ class PairConversionTests(unittest.TestCase):
         original = self.convert("default.pt")
         paired = self.convert("paired.pt", include_pair_tensor=True)
         self.assertNotIn("pair_obj", original)
-        self.assertEqual(original["conversion_metadata"]["schema_version"], 7)
-        self.assertEqual(paired["conversion_metadata"]["schema_version"], 8)
+        self.assertEqual(original["conversion_metadata"]["schema_version"], 11)
+        self.assertEqual(paired["conversion_metadata"]["schema_version"], 12)
         for name, tensor in original.items():
             if isinstance(tensor, torch.Tensor):
                 torch.testing.assert_close(paired[name], tensor)

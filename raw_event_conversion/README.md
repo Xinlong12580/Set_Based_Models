@@ -40,7 +40,89 @@ Select trusted production files: no dataset-version filtering is applied.
 
 `--max-events` is a total row cap, not a network-transfer limit. Selected columns
 of each opened file are read before slicing; later files are not opened once
-the cap is reached. If fewer rows exist, all available rows are saved.
+the cap is reached. Without a per-file cap, the previous behavior is unchanged:
+if fewer rows exist, all available rows are saved.
+
+Add `--max-events-per-file 1000` to keep at most the first 1,000 events from
+each input file. It defaults to no per-file cap and can be combined with
+`--max-events 10000` to also stop at 10,000 total events. File and row order are
+unchanged; there is no random sampling. Both caps apply after reading selected
+columns, not to the amount transferred from EOS.
+
+When both limits are supplied, `max_events_per_file * number_of_files` must be
+at least the requested total; equality is allowed. This is checked before
+reading files. Actual file sizes are checked as each file is opened, and
+conversion stops with an error as soon as the remaining files cannot provide
+enough events even if each contributes its full cap. Short or empty files are
+allowed when the other files can still supply the total; no upfront scan of
+individual file sizes is performed.
+Capacity failures do not create or replace the output PT file or its sidecar.
+
+## Compulsory output-file limit
+
+Each saved PT contains **at most 10,000 events**, regardless of the total or
+input-file cap. No option is needed to enable this, and there is no CLI option
+to raise the limit. The existing `--max-events-per-file` still controls events
+selected from each **input Parquet**, not the output chunk size.
+
+- At most 10,000 events: keep the requested name, e.g. `train_minbias.pt`.
+- More than 10,000 events: write `train_minbias_00000.pt`,
+  `train_minbias_00001.pt`, etc. The last chunk may be smaller.
+- Every PT keeps the original tensor format, feature schemas, and labels.
+  `raw_source_file` and `raw_source_row` retain their original input-file/row
+  meaning across chunk boundaries; each PT has its own `.sources.json` sidecar.
+- `train_minbias.chunks.json` lists exactly the PT files and event counts from
+  the current run, using paths relative to the index's directory. It is also
+  written for single-file conversions. Use this index rather than a filename
+  glob: reruns do not silently delete older extra chunks or legacy single PTs.
+
+Chunks are built, serialized to temporary disk storage, and released from RAM
+before conversion continues. Only one output chunk is accumulated at a time;
+concatenation temporarily duplicates that chunk, not the entire dataset.
+Raw Parquet buffers and feature-computation temporaries still consume memory.
+All chunks are serialized before any final output is replaced, so input or
+serialization errors leave previous outputs intact. The chunk index is
+published last.
+
+The Python function returns a `Path` for a single PT, or an ordered list of
+`Path` objects for multiple PTs. The CLI prints each saved path and the index.
+Existing small-file callers remain compatible.
+
+The mixer accepts multiple PT files or quoted wildcard patterns per class:
+
+```bash
+python scripts/make_reference_anomalous.py \
+  --background 'data/SIGNAL/train_minbias_*.pt' \
+  --signal 'data/SIGNAL/train_ggHgammagamma_*.pt' \
+  --output-dir data/SIGNAL/ggHgammagamma_train_mixture \
+  --reference-count 5000 --background-count 4500 --signal-count 500
+```
+
+Sampling uses the combined event pool, with disjoint background selections.
+The mixer loads one source file at a time rather than concatenating the full
+pool; the two requested output datasets still reside in memory. For multi-file
+inputs, `source_file_index` indexes `source_files`, and `source_index` identifies
+the row within that PT. Keep source sidecars to resolve the raw provenance.
+Quoted wildcards and shell-expanded file lists both work. Matches are sorted
+within each pattern, and repeated files in one class are used only once.
+The mixer does not parse `.chunks.json` directly or automatically exclude old
+extra chunks: ensure the wildcard matches exactly the current run's file list.
+
+## Progress display
+
+CLI conversion shows a progress bar on stderr by default; existing quick
+runners inherit it automatically. Add `--no-progress` to silence it, or
+`--progress` to enable it explicitly. The Python API is silent unless called
+with `progress=True`.
+
+The bar tracks converted events against `--max-events`, or completed input
+files when no event total is supplied. It also reports file/event counts,
+chunks staged, elapsed time, and the current reading/converting/saving stage.
+Reading a Parquet file and building one tensor block are blocking operations;
+the display updates between these operations, not for every event. A full
+event bar does not mean saving has finished: `done` appears only after the
+outputs and chunk index have been published. Redirected stderr uses occasional
+newline-separated updates instead of terminal control characters.
 
 ## Output and compatibility
 
@@ -58,9 +140,9 @@ The PUPPI switch preserved names, ordering, and tensor width, but changed
 values and source definitions. Charged raw-PF PT features appended eight more
 columns without reordering the existing 139. Impact-parameter features now
 append another 38, preserving those 147. Ranked lepton impact parameters append
-eight more, preserving those 185. `conversion_metadata.schema_version` is 7
-because conversion saves real objects with additional properties and validity flags;
-pair-enabled output uses version 8.
+eight more, preserving those 185. `conversion_metadata.schema_version` is 11
+for the object layout with decoded b-tag decisions and signed DZ; pair-enabled output uses
+version 12. Event features remain unchanged by the b-tag and DZ additions.
 `object_pt_columns` and `met_columns` record the default input mappings.
 Per-feature `required_columns` also identify the sources. Reconvert both
 classes and remake mixtures; existing `.pt` files are not updated or relabeled.
@@ -386,9 +468,12 @@ Older conversion pipelines and their object layouts are not changed.
   inferred from a filename and is not the runner's training-class assignment.
 - `raw_source_file [N]` and `raw_source_row [N]`, int64: original file/row indices.
   The adjacent `<output-stem>.sources.json` stores the ordered input filenames.
-- `obj [N,22,20]`, float32: the first four columns retain the old
+- `obj [N,22,36]`, float32: the first four columns retain the old
   `[pt, eta, phi, type_id]` format, followed by eight properties and eight
-  matching validity flags, with **no MET slot**. Slot groups and type IDs are:
+  matching validity flags. Twelve b-tag decisions and two shared guards are
+  appended after these original 20 columns, followed by signed lepton `dz`
+  and `dz_valid`. The previous 34 columns keep their indices, with **no MET slot**.
+  Slot groups and type IDs are:
 
   | Slots (zero-based) | Collection | Type ID |
   | --- | --- | --- |
@@ -410,8 +495,8 @@ Older conversion pipelines and their object layouts are not changed.
   metadata records sources, caps, type IDs, sorting and padding. Event-level
   MET features and optional native MET information are unchanged.
 
-  The eight new columns are appended in this order; the corresponding
-  `*_valid` columns follow in the same order:
+  The eight object-property columns follow the four base columns in this order;
+  the corresponding `*_valid` columns follow in the same order:
 
   | Column | Applicable types | Definition |
   | --- | --- | --- |
@@ -423,6 +508,51 @@ Older conversion pipelines and their object layouts are not changed.
   | `charged_fraction` | Jets | `NCharged / (NCharged + NNeutrals)`; a count fraction, not an energy fraction |
   | `ehad_over_eem` | Electrons, photons | Stored `EhadOverEem` |
   | `charge` | Jets, muons, electrons | Stored `Charge`; the jet field is not a recomputed PT-weighted jet charge |
+
+  **Jet b-tag decisions:** both `L1T_JetPuppiAK4_BTag` and
+  `L1T_JetPuppiAK4_BTagPhys` are decoded into Boolean working-point columns:
+
+  | Bit | `BTag` column | `BTagPhys` column |
+  | --- | --- | --- |
+  | 0 | `btag_loose` | `btag_phys_loose` |
+  | 1 | `btag_medium` | `btag_phys_medium` |
+  | 2 | `btag_tight` | `btag_phys_tight` |
+  | 3 | `btag_loose_mtd` | `btag_phys_loose_mtd` |
+  | 4 | `btag_medium_mtd` | `btag_phys_medium_mtd` |
+  | 5 | `btag_tight_mtd` | `btag_phys_tight_mtd` |
+
+  Each decision is `(mask & (1 << bit)) != 0`. The six `btag_*` decisions
+  share `btag_valid`; the six `btag_phys_*` decisions share `btag_phys_valid`.
+  The append order is six `btag` decisions, their guard, six `btag_phys`
+  decisions, their guard. A present jet with mask zero is valid and untagged.
+  Non-jets, padding and invalid masks have zero decisions and a false guard;
+  a cut on `False` therefore cannot select inapplicable or invalid objects.
+  A valid mask is a finite nonnegative integer representable as uint32;
+  other bits are ignored, not interpreted as a score. Both raw mask columns
+  must exist and align with jet PT, like the other required object fields.
+
+  The bit mapping is pinned to the checked
+  [COLLIDE2V v1.0 card](https://github.com/fermilab-hep-ai/simulation/blob/d10b609b92f3c188ccf9c6c7459eee610f2b30d9/cards/CMS_PhaseII_200PU_COLLIDE2V_v1.tcl#L5005).
+  These are fast-simulation decisions generated from flavour-dependent
+  efficiency/mistag parameterizations, not stored continuous network scores.
+  `BTagPhys` uses `FlavorPhys` rather than `Flavor`; it is an alternative
+  flavour definition, not a separate working point. The
+  [producer implementation](https://github.com/fermilab-hep-ai/delphes/blob/4b2903bede33b2d882174ce8184075497669241c/modules/BTagging.cc)
+  draws decisions separately: do not assume nested loose/medium/tight bits.
+  `BTag` and `BTagPhys` are alternate simulation prescriptions, not two
+  independent detector measurements; interpreting cuts combining them requires care.
+  Packed masks and generator flavour are not saved as model features.
+  No b-tag multiplicities or other event-level features are added here.
+
+  **Longitudinal impact parameter:** `dz` and `dz_valid` are appended at
+  indices 34 and 35. `dz` preserves signed `L1T_Electron_DZ` or
+  `L1T_MuonTight_DZ` in **mm**, without rescaling or taking its absolute value.
+  It follows the same PT-selected object. A finite physical zero is valid;
+  missing/nonfinite values, padding, jets and photons give zero with a false
+  guard. The reference is the producer beam spot/origin, not a recomputed
+  primary vertex. `ErrorDZ` is not required or used. The audited production
+  carries truth-derived DZ without realistic resolution smearing; see
+  [IMPACT_PARAMETERS.md](IMPACT_PARAMETERS.md#longitudinal-impact-parameters).
 
   Properties and flags always follow the **same PT-selected object**, including
   producer-order ties. Values that do not apply to a type, missing values, and
@@ -442,8 +572,9 @@ Older conversion pipelines and their object layouts are not changed.
   `--allow-validity-cuts` is enabled. `obj_feature_schema` describes each column's kind and units,
   applicable types, raw sources, definition, and associated validity column.
   All applicable raw fields must exist and align with their collection's PT,
-  including fields in empty collections. No D0 significance, jet truth flavour,
-  or tagging label is added.
+  including fields in empty collections. No object-level D0 significance or
+  jet truth flavour is added. B-tag columns contain the simulated working-point
+  decisions described above, not truth labels.
 - `pf [N,1,1]`: a **zero compatibility placeholder**, not reconstructed PF
   candidates. The existing `scripts/make_reference_anomalous.py` preserves
   both the real `obj` tensor and event features unchanged when mixing.

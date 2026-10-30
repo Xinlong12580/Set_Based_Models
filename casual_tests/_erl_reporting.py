@@ -1,34 +1,15 @@
-"""Penalized-Gini ERL using saved events and single particles or particle pairs.
-
-Score/pruning defaults follow run_ERL_Gini_nested_event_only.py. Logical-subset pruning
-supports event, object, and mixed rules, preserving same-slot/count semantics.
-Schema-declared validity flags automatically guard object and event cuts.
---pair-tensor selects pair_obj instead of obj; --object-only disables events.
-"""
+"""Shared ERL tensor loading and quantitative report construction."""
 
 from dataclasses import dataclass
-from contextlib import nullcontext
 import json
-import math
 from pathlib import Path
-import sys
 
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "src"))
-
-from set_based_models import EventCut, ExistentialRuleList, ObservableSpec, SetInput
+from set_based_models import EventCut, ObservableSpec, SetInput
 from set_based_models.rule_list.generation import _object_priority_progress
-from casual_tests import _event_only_reporting as event_reporting
 from casual_tests import _quantitative_reporting as reporting
-from casual_tests._erl_progress import SearchProgress
-from casual_tests.run_ERL_Gini_nested_event_only import _finite_float, _positive_float
-from casual_tests.run_ERL_Gini_penalized_event_only import (
-    ReferencePenalizedGini, _nonnegative_float, _similarity_threshold,
-)
 
 BASIC_OBJECT_COLUMNS = ("pt", "eta", "phi", "type_id")
 BASIC_PAIR_COLUMNS = tuple(f"{name}_{member}" for member in (1, 2) for name in BASIC_OBJECT_COLUMNS)
@@ -164,47 +145,15 @@ def load_dataset(path, *, use_objects=True, use_events=True, basic_object_featur
                    object_specs, event_specs, object_schema, event_schema, object_key)
 
 
-def _load_pair(parser, args, mode):
-    try:
-        signal, background = (load_dataset(path, use_objects=not args.no_object_features,
-                                           use_events=not args.no_event_features,
-                                           basic_object_features=args.basic_object_features,
-                                           use_pairs=args.pair_tensor)
-                              for path in (args.signal, args.background))
-        if signal.path.samefile(background.path):
-            raise ValueError("Signal and background inputs must be different files.")
-        if (signal.object_observables != background.object_observables
-                or signal.object_schema != background.object_schema
-                or signal.objects.shape[1:] != background.objects.shape[1:]
-                or signal.event_observables != background.event_observables
-                or signal.feature_schema != background.feature_schema):
-            raise ValueError("Enabled signal/background shapes, columns, and schemas must match.")
-        requested = (args.report.expanduser().absolute() if args.report is not None else
-                     Path.cwd() / "reports" /
-                     f"ERL_Gini_nested_flexible_{signal.path.parent.name}_{signal.path.stem}"
-                     f"{'_pairs' if args.pair_tensor else ''}"
-                     f"{'_basic_objects' if args.basic_object_features else ''}_{mode}.txt")
-        target = requested.parent.resolve() / requested.name
-        if target.is_symlink():
-            raise ValueError("Refusing to write through a report symlink.")
-        if (target in (signal.path, background.path) or
-                (target.exists() and any(target.samefile(path) for path in (signal.path, background.path)))):
-            raise ValueError("The report must not overwrite either input tensor.")
-        if target.exists() and not target.is_file():
-            raise ValueError("The report output must be a file, not a directory.")
-        reporting._check_report_target(parser, target, args.overwrite_report)
-        return signal, background, target
-    except (OSError, RuntimeError, TypeError, ValueError) as error:
-        parser.error(str(error))
-
-
 def _rule_records(model, signal, background, result, args, max_acceptance):
-    ranks = {rule.rule_id: rank for rank, rule in enumerate(result.retained, 1)}
+    ranks = {} if result is None else {rule.rule_id: rank for rank, rule in enumerate(result.retained, 1)}
+    is_gini = getattr(args, "score", "gini") == "gini"
     records = []
-    for rank, rule in enumerate(model.candidate_rules_, 1):
+    candidates = sorted(model.candidate_rules_, key=lambda rule: (-rule.generation_score, rule.rule_id))
+    for rank, rule in enumerate(candidates, 1):
         priority_progress = _object_priority_progress(rule.cuts, model.object_cut_priority, model.observables)
         remaining_priority = list(model.object_cut_priority[priority_progress:])
-        normalized = result.normalized_cuts[rule.rule_id]
+        normalized = rule.cuts if result is None else result.normalized_cuts[rule.rule_id]
         parts = [reporting._predicate_text(cut, model.event_observables, include_scope=True)
                  for cut in normalized if isinstance(cut, EventCut)]
         slots = [cut for cut in normalized if not isinstance(cut, EventCut)]
@@ -227,7 +176,7 @@ def _rule_records(model, signal, background, result, args, max_acceptance):
                 "display": reporting._predicate_text(step.cut, schema, include_scope=is_event),
                 "prefix_score": step.generation_score,
                 "prefix_gini_gain": reporting.gini_rule_score(stats),
-                "prefix_reference_penalty_term": args.reference_penalty * stats.false_positive_rate,
+                "prefix_reference_penalty_term": args.reference_penalty * stats.false_positive_rate if is_gini else None,
                 "prefix_signal_accepted": stats.signal_accepted,
                 "prefix_background_accepted": stats.background_accepted,
                 "prefix_signal_acceptance": stats.true_positive_rate,
@@ -255,7 +204,10 @@ def _rule_records(model, signal, background, result, args, max_acceptance):
             "retained_after_final_pruning": retained,
             "retained_after_nested_pruning": retained,
             "retained_after_similarity_pruning": retained,
-            "pruned_rank": ranks.get(rule.rule_id), "pruning": result.decisions[rule.rule_id],
+            "pruned_rank": ranks.get(rule.rule_id),
+            "pruning": ({"status": "not_pruned", "pruned_by_rule_id": None,
+                         "score_gap": None, "retained_witness_rule_id": None}
+                        if result is None else result.decisions[rule.rule_id]),
         })
     return records
 
@@ -266,9 +218,10 @@ def _print_rules(records, limit):
         return
     shown = records if limit == 0 else records[:limit]
     for rank, record in enumerate(shown, 1):
+        components = (f"gini_gain={record['gini_gain']:.6g} reference_penalty_term={record['reference_penalty_term']:.6g}"
+                      if record["reference_penalty_term"] is not None else f"gini_gain_diagnostic={record['gini_gain']:.6g}")
         print(f"\n[{rank:03d}] global_rank={record['rank']} rule={record['rule_id']} "
-              f"score={record['score']:.6g} gini_gain={record['gini_gain']:.6g} "
-              f"reference_penalty_term={record['reference_penalty_term']:.6g} "
+              f"score={record['score']:.6g} {components} "
               f"depth={record['depth']} effective_depth={record['effective_depth_after_simplification']} "
               f"pruned_rank={record['pruned_rank']} logical_pruning={record['logical_pruning_applicable']}")
         print(f"  rule:       {record['simplified_rule']}")
@@ -279,111 +232,21 @@ def _print_rules(records, limit):
         reporting._print_metrics(record["metrics"])
         print("  prefix history:")
         for step in record["steps"]:
+            components = (f"gain={step['prefix_gini_gain']:.6g} reference_penalty_term={step['prefix_reference_penalty_term']:.6g}"
+                          if step["prefix_reference_penalty_term"] is not None else f"gini_gain_diagnostic={step['prefix_gini_gain']:.6g}")
             print(f"    {step['depth']}. [{step['scope']}] {step['display']} | "
-                  f"score={step['prefix_score']:.6g} gain={step['prefix_gini_gain']:.6g} "
-                  f"reference_penalty_term={step['prefix_reference_penalty_term']:.6g} | "
+                  f"score={step['prefix_score']:.6g} {components} | "
                   f"mixture={step['prefix_signal_accepted']} reference={step['prefix_background_accepted']}")
     if len(shown) < len(records):
         print(f"\n... {len(records) - len(shown)} additional rules are stored in the report.")
 
 
-def main(argv=None):
-    parser = event_reporting._parser(__doc__, model="ERL")
-    parser.add_argument("--no-object-features", "--event-only", action="store_true",
-                        help="Ignore object tensors and their schemas; use native event-only ERL.")
-    parser.add_argument("--no-event-features", "--object-only", action="store_true",
-                        help="Ignore event_features and its schema; use object-only ERL.")
-    parser.add_argument("--basic-object-features", action="store_true",
-                        help="Use only pt, eta, phi, type_id per member, plus required guards; "
-                             "supports single particles or pairs; event inputs are unchanged.")
-    parser.add_argument("--pair-tensor", "--use-pair-tensor", action="store_true",
-                        help="Use pair_obj, its schema and pair_slot_mask instead of obj. "
-                             "Requires conversion with --with-pair-tensor; events remain enabled "
-                             "unless --object-only is supplied.")
-    parser.add_argument("--progress", action="store_true",
-                        help="Show depth, beam-parent/cut counts and elapsed time on stderr; "
-                             "off by default, with no whole-fit percentage or ETA.")
-    parser.add_argument("--object-cut-priority", nargs="+", default=[], metavar="FEATURE[:DIRECTION]",
-                        help="Compulsory object-cut sequence, e.g. type_id pt "
-                             "or type_id_1 type_id_2 pair_mass pair_mass for pairs. "
-                             "Optional directions are >, >=, <, <=; quote entries such as 'pair_mass:>'. "
-                             "Repeated names require another cut. "
-                             "Incomplete rules remain eligible; event cuts are unrestricted.")
-    parser.add_argument("--require-complete-priority", action="store_true",
-                        help="Retain only candidates completing the object-cut priority list. "
-                             "Applied before all final pruning; beam search still uses incomplete prefixes.")
-    parser.add_argument("--reference-penalty", type=_nonnegative_float, default=1.0,
-                        help="Lambda in Gini - lambda * reference acceptance (default: 1; 0 = pure Gini).")
-    parser.add_argument("--stricter-score-improvement", type=_finite_float, default=0.0,
-                        help="Require score(stricter)-score(looser) > this value; "
-                             "negative values permit bounded score loss (default: 0).")
-    parser.add_argument("--max-trigger-rate-khz", type=_nonnegative_float, default=None,
-                        help="Optional per-rule rate budget, applied before logical pruning.")
-    parser.add_argument("--input-rate-mhz", type=_positive_float, default=40.0,
-                        help="Reference input-stream rate in MHz (default: 40).")
-    parser.add_argument("--beam-similarity-filter", action="store_true",
-                        help="Opt into beam Jaccard filtering; prefixes can be lost before final pruning.")
-    parser.add_argument("--final-similarity-filter", action="store_true",
-                        help="Opt into final Jaccard pruning for all rule types (default: off).")
-    parser.add_argument("--signal-similarity-threshold", type=_similarity_threshold,
-                        default=reporting.SIGNAL_SIMILARITY_THRESHOLD,
-                        help="Mixture Jaccard threshold for enabled similarity stages; higher prunes less.")
-    parser.add_argument("--background-similarity-threshold", type=_similarity_threshold,
-                        default=reporting.BACKGROUND_SIMILARITY_THRESHOLD,
-                        help="Reference Jaccard threshold for enabled similarity stages; higher prunes less.")
-    parser.add_argument("--print-reference-top", type=reporting._nonnegative_int, default=5)
-    parser.add_argument("--print-pruned-top", type=reporting._nonnegative_int, default=20)
-    args = parser.parse_args(argv)
-    if args.no_object_features and args.no_event_features:
-        parser.error("Cannot disable both object and event features.")
-    if args.basic_object_features and args.no_object_features:
-        parser.error("--basic-object-features cannot be combined with --event-only/--no-object-features.")
-    if args.pair_tensor and args.no_object_features:
-        parser.error("--pair-tensor cannot be combined with --event-only/--no-object-features.")
-    if args.object_cut_priority and args.no_object_features:
-        parser.error("--object-cut-priority requires object features; cannot use --event-only.")
-    mode = ("event_only" if args.no_object_features else
-            "object_only" if args.no_event_features else "combined")
-    max_acceptance = (None if args.max_trigger_rate_khz is None else
-                      (args.max_trigger_rate_khz / 1000) / args.input_rate_mhz)
-    if (not math.isfinite(args.input_rate_mhz * 1000) or
-            (max_acceptance is not None and not math.isfinite(max_acceptance))):
-        parser.error("rate values are too large or small for finite rate calculations")
-    signal, background, target = _load_pair(parser, args, mode)
-    try:
-        model = ExistentialRuleList(
-            signal.object_observables, event_observables=signal.event_observables,
-            max_rule_depth=4, beam_width=40, max_candidate_rules=300, max_thresholds=32,
-            minimum_count=1, min_signal_efficiency=0.01,
-            allow_validity_cuts=args.allow_validity_cuts,
-            object_cut_priority=args.object_cut_priority,
-            scoring_function=ReferencePenalizedGini(args.reference_penalty),
-            beam_similarity_filter=args.beam_similarity_filter,
-            beam_signal_similarity_threshold=args.signal_similarity_threshold,
-            beam_background_similarity_threshold=args.background_similarity_threshold,
-        )
-    except (TypeError, ValueError) as error:
-        parser.error(str(error))
-    with (SearchProgress() if args.progress else nullcontext()) as progress:
-        model.fit(
-            None if args.no_object_features else signal.objects,
-            None if args.no_object_features else background.objects,
-            signal_slot_mask=None if args.no_object_features else signal.slot_mask,
-            background_slot_mask=None if args.no_object_features else background.slot_mask,
-            signal_event_features=signal.event_features, background_event_features=background.event_features,
-            progress_callback=progress,
-        )
-    model.prune_candidates(
-        require_complete_priority=args.require_complete_priority,
-        stricter_score_improvement=args.stricter_score_improvement,
-        max_reference_acceptance=None if max_acceptance is None else min(1.0, max_acceptance),
-        similarity_filter=args.final_similarity_filter,
-        signal_similarity_threshold=args.signal_similarity_threshold,
-        background_similarity_threshold=args.background_similarity_threshold,
-    )
+def _training_report(model, signal, background, args, mode, max_acceptance, report_path, model_path):
     records = _rule_records(model, signal, background, model.pruning_result_, args, max_acceptance)
-    report = reporting._base_report("ERL_Gini_nested_flexible", signal, background, model.event_observables)
+    report = reporting._base_report("ERL", signal, background, model.event_observables)
     report.update({
+        "stage": "training", "trainer": "casual_tests/train_ERL.py",
+        "outputs": {"model": str(model_path), "training_report": str(report_path)},
         "feature_mode": mode, "native_event_only": mode == "event_only", "dummy_object_input": None,
         "object_tensor_key": signal.object_tensor_key,
         "object_observables": [reporting._observable_record(spec) for spec in model.observables],
@@ -421,6 +284,9 @@ def main(argv=None):
             "max_candidate_rules": model.max_candidate_rules, "max_thresholds": model.max_thresholds,
             "minimum_count": model.minimum_count, "min_signal_efficiency": model.min_signal_efficiency,
             "beam_similarity_filter": args.beam_similarity_filter,
+            "beam_novelty_weight": model.beam_novelty_weight,
+            "novelty_selection_score": "base_score + beta * (1 - max_signal_event_jaccard)",
+            "novelty_selection_scope": "beam_and_truncated_candidate_pool_only; intrinsic_scores_unchanged",
             "beam_signal_similarity_threshold": args.signal_similarity_threshold,
             "beam_background_similarity_threshold": args.background_similarity_threshold,
             "final_signal_similarity_threshold": args.signal_similarity_threshold,
@@ -448,6 +314,7 @@ def main(argv=None):
                                         "named pt column > 0; schema-declared per-feature validity guards"),
         },
         "summary": {
+            "final_pruning_applied": model.pruning_result_ is not None,
             "candidate_rule_count": len(records), "pruned_rule_count": len(model.selected_rules_),
             "mixture_enriched_rule_count": sum(r["direction"] == "mixture-enriched" for r in records),
             "reference_enriched_rule_count": sum(r["direction"] == "reference-enriched" for r in records),
@@ -463,65 +330,4 @@ def main(argv=None):
     })
     for record in report["inputs"].values():
         record["object_tensor_key"] = signal.object_tensor_key
-    reporting._print_header(report, target)
-    print(f"FEATURE MODE: {mode}; object columns={len(model.observables)}; "
-          f"event columns={len(model.event_observables)}; no dummy object tensor.")
-    if args.pair_tensor:
-        print("OBJECT INPUT: pair_obj; presence from pair_slot_mask; each slot is two distinct retained particles.")
-        print("PAIR ORDER: type_id ascending, then PT descending within type; no self-pairs/reversed duplicates.")
-        print("NOTE: multiple accepted pairs may share a particle; pair count is not distinct-particle count.")
-    if args.basic_object_features:
-        print(f"OBJECT FEATURES: basic only ({', '.join(spec.name for spec in model.observables)}).")
-    if model.object_cut_priority:
-        completion_note = ("complete list required for final retention" if args.require_complete_priority
-                           else "incomplete rules eligible")
-        print(f"OBJECT CUT PRIORITY: {' -> '.join(model.object_cut_priority)} -> unrestricted; "
-              f"{completion_note}; event cuts unrestricted.")
-    if args.require_complete_priority:
-        print("PRIORITY COMPLETION: incomplete prefixes are searched; incomplete candidates are "
-              "excluded before rate, equivalence, logical and final similarity pruning. "
-              "An empty priority list imposes no restriction.")
-    print("NOTE: native_event_info/pf are not inputs; schema-declared validity flags automatically guard cuts.")
-    print("VALIDITY FLAGS: " + ("standalone cuts allowed (explicit opt-in)." if model.allow_validity_cuts
-                                else "guard-only; standalone True/False cuts disabled."))
-    print(f"SCORING: Gini gain - {args.reference_penalty:g} * reference acceptance (fraction).")
-    if max_acceptance is not None:
-        print(f"RATE LIMIT: per rule <= {args.max_trigger_rate_khz:g} kHz at {args.input_rate_mhz:g} MHz; "
-              f"reference acceptance <= {max_acceptance:.6g}.")
-    print("NOTE: rates use training reference acceptance, without confidence bounds or an OR-menu budget.")
-    print(f"LOGICAL PRUNING: event/object/mixed rules require improvement > {args.stricter_score_improvement:g}; "
-          "same-slot predicates and minimum counts are respected. It can discard lower-rate operating points.")
-    print(f"SIMILARITY: beam={args.beam_similarity_filter}; final={args.final_similarity_filter}.")
-    print("NOTE: zero observed reference acceptance does not establish zero background rate.")
-    enriched = [r for r in records if r["direction"] == "mixture-enriched"]
-    reporting._print_section("TOP MIXTURE-ENRICHED CANDIDATES BEFORE PRUNING")
-    _print_rules(enriched, args.print_top)
-    if args.print_reference_top:
-        reporting._print_section("TOP REFERENCE-ENRICHED CANDIDATES (NOT ANOMALY SELECTIONS)")
-        _print_rules([r for r in records if r["direction"] == "reference-enriched"], args.print_reference_top)
-    reporting._print_section("TOP MIXTURE-ENRICHED RULES AFTER FINAL PRUNING")
-    _print_rules([r for r in enriched if r["retained_after_final_pruning"]], args.print_pruned_top)
-    reporting._print_section("PRUNING AUDIT")
-    by_id = {r["rule_id"]: r for r in records}
-    removed = [r for r in records if not r["retained_after_final_pruning"]]
-    for record in removed:
-        decision = record["pruning"]
-        print(f"  rule={record['rule_id']} reason={decision['status']} "
-              f"witness_rule={decision['pruned_by_rule_id']} "
-              f"retained_witness_rule={decision['retained_witness_rule_id']} "
-              f"score_gap={decision['score_gap']} "
-              f"estimated_rate_khz={record['estimated_reference_rate_khz']:.6g}")
-        if decision["status"] == "stricter_score_improvement":
-            print(f"    score_improvement={decision['score_improvement']:.6g}; "
-                  f"required_above={args.stricter_score_improvement:g}")
-        print(f"    discarded: {record['simplified_rule']}")
-        if decision["pruned_by_rule_id"] is not None:
-            print(f"    witness:   {by_id[decision['pruned_by_rule_id']]['simplified_rule']}")
-    if not removed:
-        print("(none)")
-    reporting._write_report(target, report, overwrite=args.overwrite_report)
-    print(f"\nStructured report saved to: {target}")
-
-
-if __name__ == "__main__":
-    main()
+    return report

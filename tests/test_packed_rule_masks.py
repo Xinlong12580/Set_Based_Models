@@ -189,7 +189,7 @@ class PackedSearchTests(unittest.TestCase):
 
     def test_pair_search_matches_dense_reference_with_actual_converter_schema(self):
         from casual_tests._quantitative_reporting import _observable_from_schema
-        from casual_tests.run_ERL_Gini_penalized_event_only import ReferencePenalizedGini
+        from casual_tests._erl_common import ReferencePenalizedGini
         from tests.test_pair_erl_runner import fixture
         data = []
         for is_signal in (True, False):

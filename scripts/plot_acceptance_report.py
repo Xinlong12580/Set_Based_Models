@@ -256,7 +256,7 @@ def main(argv=None) -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        help="Output image path (default: <report stem>_acceptance.png).",
+        help="Output image path (default: <prefix>.acceptance.png for training reports; <stem>_acceptance.png for legacy reports).",
     )
     parser.add_argument(
         "--top",
@@ -286,11 +286,12 @@ def main(argv=None) -> None:
     args = parser.parse_args(argv)
 
     report_path = args.report.expanduser().resolve()
-    output = (
-        args.output.expanduser().resolve()
-        if args.output is not None
-        else report_path.with_name(f"{report_path.stem}_acceptance.png")
-    )
+    if args.output is not None:
+        output = args.output.expanduser().resolve()
+    elif report_path.name.endswith(".report.json"):
+        output = report_path.with_name(report_path.name.removesuffix(".report.json") + ".acceptance.png")
+    else:
+        output = report_path.with_name(f"{report_path.stem}_acceptance.png")
     if output.exists() and not args.overwrite:
         parser.error(f"Refusing to overwrite {output}; use --overwrite.")
     try:

@@ -2,6 +2,7 @@
 
 from contextlib import redirect_stdout
 import io
+from importlib.util import find_spec
 from itertools import combinations
 import json
 import os
@@ -439,7 +440,7 @@ class RawEventConversionTests(unittest.TestCase):
         data = self.load()
         self.assertEqual(tuple(data["event_features"].shape), (3, 193))
         metadata = data["conversion_metadata"]
-        self.assertEqual(metadata["schema_version"], 7)
+        self.assertEqual(metadata["schema_version"], 11)
         self.assertEqual(metadata["pf_impact_parameter_units"], "mm")
         self.assertEqual(metadata["object_pt_columns"]["jets"], "L1T_JetPuppiAK4_PT")
         self.assertEqual(metadata["met_columns"], ["L1T_PUPPIMET_MET", "L1T_PUPPIMET_Phi"])
@@ -480,7 +481,7 @@ class RawEventConversionTests(unittest.TestCase):
         self.assertEqual(data["event_features"][1, :20].tolist(), [8] * 4 + [7, 5, 3, 1] * 4)
         self.assertEqual(data["event_features"][2, :4].tolist(), [7, 8, 9, 15])
         self.assertEqual(data["label"].tolist(), [1, 1, 1])
-        self.assertEqual(tuple(data["obj"].shape), (3, 22, 20))
+        self.assertEqual(tuple(data["obj"].shape), (3, 22, 36))
         self.assertEqual(tuple(data["pf"].shape), (3, 1, 1))
         self.assertFalse(bool(data["obj"][0].any()))
         self.assertEqual(data["obj_columns"], list(OBJECT_COLUMNS))
@@ -1047,12 +1048,96 @@ class RawEventConversionTests(unittest.TestCase):
                                   self.output, label=1, max_events=2)
         self.assertEqual(len(self.load()["label"]), 2)
 
+    def test_per_file_cap_preserves_first_rows_and_all_tensor_alignment(self):
+        second = self.root / "second.parquet"
+        ak.to_parquet(raw_fixture(), second)
+        convert_raw_parquet_to_pt([self.source, second], self.output, label=5,
+                                  max_events_per_file=2, include_pair_tensor=True)
+        data = self.load()
+        self.assertEqual(data["raw_source_file"].tolist(), [0, 0, 1, 1])
+        self.assertEqual(data["raw_source_row"].tolist(), [0, 1, 0, 1])
+        self.assertEqual(data["native_event_info"][:, 0].tolist(), [0., 50., 0., 50.])
+        for key, value in data.items():
+            if isinstance(value, torch.Tensor):
+                self.assertEqual(len(value), 4, key)
+                if key != "raw_source_file":
+                    torch.testing.assert_close(value[:2], value[2:])
+
+    def test_per_file_and_total_caps_work_together_and_stop_opening_files(self):
+        second = self.root / "second.parquet"
+        ak.to_parquet(raw_fixture(), second)
+        convert_raw_parquet_to_pt([self.source, second, self.root / "not_opened.parquet"],
+                                  self.output, label=1, max_events=3, max_events_per_file=2)
+        data = self.load()
+        self.assertEqual(data["raw_source_file"].tolist(), [0, 0, 1])
+        self.assertEqual(data["raw_source_row"].tolist(), [0, 1, 0])
+        self.assertEqual(data["native_event_info"][:, 0].tolist(), [0., 50., 0.])
+
+    def test_short_and_empty_files_do_not_consume_unused_per_file_allowance(self):
+        short, empty = self.root / "short.parquet", self.root / "empty.parquet"
+        ak.to_parquet(raw_fixture()[:1], short)
+        ak.to_parquet(raw_fixture()[:0], empty)
+        convert_raw_parquet_to_pt([short, empty, self.source], self.output, label=1,
+                                  max_events=3, max_events_per_file=2)
+        data = self.load()
+        self.assertEqual(data["raw_source_file"].tolist(), [0, 2, 2])
+        self.assertEqual(data["raw_source_row"].tolist(), [0, 0, 1])
+
+    def test_cli_per_file_cap_is_forwarded(self):
+        second = self.root / "second.parquet"
+        ak.to_parquet(raw_fixture(), second)
+        with redirect_stdout(io.StringIO()):
+            main(["--input", str(self.source), str(second), "--output", str(self.output),
+                  "--label", "1", "--max-events", "2", "--max-events-per-file", "1"])
+        data = self.load()
+        self.assertEqual(data["raw_source_file"].tolist(), [0, 1])
+        self.assertEqual(data["raw_source_row"].tolist(), [0, 0])
+
+    def test_insufficient_configured_capacity_fails_before_opening_files(self):
+        with patch("raw_event_conversion.convert.ak.from_parquet") as reader:
+            with self.assertRaisesRegex(ValueError, "at most 4"):
+                convert_raw_parquet_to_pt([self.source, self.root / "not_opened.parquet"],
+                                          self.output, label=1, max_events=5, max_events_per_file=2)
+        reader.assert_not_called()
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.output.with_suffix(".sources.json").exists())
+
+    def test_short_file_runtime_check_stops_before_opening_later_files(self):
+        ak.to_parquet(raw_fixture()[:1], self.source)
+        original = ak.from_parquet
+        with patch("raw_event_conversion.convert.ak.from_parquet", wraps=original) as reader, \
+                patch("raw_event_conversion.convert.build_event_tensor") as build:
+            with self.assertRaisesRegex(ValueError, "After opening.*at most 5 total"):
+                convert_raw_parquet_to_pt(
+                    [self.source, self.root / "not_opened1.parquet", self.root / "not_opened2.parquet"],
+                    self.output, label=1, max_events=6, max_events_per_file=2)
+        self.assertEqual(reader.call_count, 1)
+        build.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_runtime_shortage_preserves_existing_outputs(self):
+        convert_raw_parquet_to_pt(self.source, self.output, label=1)
+        sidecar = self.output.with_suffix(".sources.json")
+        before = self.output.read_bytes(), sidecar.read_bytes()
+        short = self.root / "short.parquet"
+        ak.to_parquet(raw_fixture()[:1], short)
+        with self.assertRaisesRegex(ValueError, "at most 3 total"):
+            convert_raw_parquet_to_pt([self.source, short], self.output, label=1,
+                                      max_events=4, max_events_per_file=2)
+        self.assertEqual((self.output.read_bytes(), sidecar.read_bytes()), before)
+
+    def test_total_cap_without_per_file_cap_preserves_previous_behavior(self):
+        convert_raw_parquet_to_pt(self.source, self.output, label=1, max_events=4)
+        self.assertEqual(len(self.load()["label"]), 3)
+
     def test_only_required_columns_are_read(self):
         original = ak.from_parquet
         with patch("raw_event_conversion.convert.ak.from_parquet", wraps=original) as reader:
             convert_raw_parquet_to_pt(self.source, self.output, label=1)
         columns = reader.call_args.kwargs["columns"]
-        self.assertEqual(len(columns), 35)
+        self.assertEqual(len(columns), 39)
+        self.assertTrue({"L1T_JetPuppiAK4_BTag", "L1T_JetPuppiAK4_BTagPhys"} <= set(columns))
+        self.assertFalse(any(column.endswith(("_Flavor", "_FlavorPhys", "_FlavorAlgo")) for column in columns))
         self.assertEqual({column for column in columns if column.endswith("_Eta")},
                          {"L1T_Electron_Eta", "L1T_MuonTight_Eta", "L1T_PhotonTight_Eta", "L1T_JetPuppiAK4_Eta"})
         self.assertTrue({"L1T_Electron_Phi", "L1T_MuonTight_Phi", "L1T_PhotonTight_Phi", "L1T_JetPuppiAK4_Phi"}
@@ -1061,6 +1146,8 @@ class RawEventConversionTests(unittest.TestCase):
         self.assertTrue({"L1T_PFPart_PT", "L1T_PFPart_Charge"} <= set(columns))
         self.assertTrue({"L1T_PFPart_D0", "L1T_PFPart_ErrorD0"} <= set(columns))
         self.assertTrue({"L1T_Electron_D0", "L1T_MuonTight_D0"} <= set(columns))
+        self.assertTrue({"L1T_Electron_DZ", "L1T_MuonTight_DZ"} <= set(columns))
+        self.assertFalse(any(column.endswith("_ErrorDZ") for column in columns))
         self.assertFalse(any(column.endswith("_ErrorD0") and not column.startswith("L1T_PFPart_")
                              for column in columns))
         self.assertFalse(any(column.endswith(("_PID", "_IsPU", "_IsRecoPU", "_PuppiW")) for column in columns))
@@ -1178,7 +1265,7 @@ class RawEventConversionTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_invalid_inputs_and_options_fail(self):
-        for options in ({"max_events": 0}, {"max_events": True}, {"label": -1},
+        for options in ({"max_events": 0}, {"max_events": True}, {"max_events_per_file": -1}, {"label": -1},
                         {"label": True}, {"thresholds": {"muons": [-5]}},
                         {"thresholds": {"taus": [10]}}):
             with self.subTest(options=options), self.assertRaises((ValueError, TypeError)):
@@ -1202,14 +1289,14 @@ class RawEventConversionTests(unittest.TestCase):
             convert_raw_parquet_to_pt(self.source, other, label=1, overwrite=False)
         self.assertFalse(other.exists())
 
-    def test_default_overwrite_warns_and_updates_both_files(self):
+    def test_default_overwrite_warns_and_updates_all_output_files(self):
         convert_raw_parquet_to_pt(self.source, self.output, label=1)
         second = self.root / "second.parquet"
         ak.to_parquet(raw_fixture(), second)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             convert_raw_parquet_to_pt(second, self.output, label=5, max_events=1)
-        self.assertEqual(len(caught), 2)
+        self.assertEqual(len(caught), 3)
         self.assertTrue(all("Overwriting existing file:" in str(item.message) for item in caught))
         self.assertEqual(self.load()["label"].tolist(), [5])
         self.assertEqual(json.loads(self.output.with_suffix(".sources.json").read_text()), [str(second)])
@@ -1285,14 +1372,17 @@ class RawEventConversionTests(unittest.TestCase):
         self.assertEqual(len(anomaly["label"]), 2)
 
     def test_event_only_runners_load_and_run_direct_output(self):
-        from casual_tests.run_EDT_event_only import main as edt_main
-        from casual_tests.run_ERL_Gini_event_only import main as erl_main
+        from casual_tests.stale.run_ERL_Gini_event_only import main as erl_main
+        runners = [(erl_main, "erl")]
+        if find_spec("set_based_edt") is not None:
+            from casual_tests.run_EDT_event_only import main as edt_main
+            runners.insert(0, (edt_main, "edt"))
         many = ak.concatenate([raw_fixture()] * 20)
         ak.to_parquet(many, self.source)
         convert_raw_parquet_to_pt(self.source, self.output, label=1)
         signal_path = self.root / "signal.pt"
         convert_raw_parquet_to_pt(self.source, signal_path, label=5)
-        for runner, name in ((edt_main, "edt"), (erl_main, "erl")):
+        for runner, name in runners:
             report = self.root / f"{name}.txt"
             with redirect_stdout(io.StringIO()):
                 runner(["--signal", str(signal_path), "--background", str(self.output),

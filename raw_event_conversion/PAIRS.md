@@ -36,7 +36,7 @@ convert_raw_parquet_to_pt(
 
 | Key | Contents |
 | --- | --- |
-| `pair_obj` | Float32 tensor `[events, 231, 68]` |
+| `pair_obj` | Float32 tensor `[events, 231, 102]` |
 | `pair_slot_mask` | Boolean tensor `[events, 231]`; true when both members exist |
 | `pair_obj_columns` | Ordered feature names |
 | `pair_obj_feature_schema` | Feature kinds, units, categories, and validity links |
@@ -57,26 +57,42 @@ convert_raw_parquet_to_pt(
 - Pair calculations use the raw values before float32 rounding. Missing
   coordinates retain false validity rather than becoming physical zero angles.
 
-Pair-enabled output has conversion schema version 8; ordinary conversion
-remains version 7. Pair definitions and mass hypotheses are recorded under
+Pair-enabled output has conversion schema version 12; ordinary conversion
+uses version 11. Pair definitions and mass hypotheses are recorded under
 `conversion_metadata["pair_tensor"]`.
 
-**Memory:** the pair tensor alone uses about 599 MiB for 10,000 events. Loading
+**Memory:** the pair tensor alone uses about 899 MiB for 10,000 events. Loading
 both classes and ERL's search state needs additional memory. This quadratic
 increase in slots is why pair generation is opt-in.
 
 ## Features
 
-Each member copies all 20 original object columns, suffixed `_1` or `_2`:
+Each member copies all 36 object columns, suffixed `_1` or `_2`:
 
 - `pt`, `eta`, `phi`, `type_id`.
 - `abs_d0`, `isolation_rho_corr`, `mass`, `n_charged`, `n_neutrals`,
   `charged_fraction`, `ehad_over_eem`, `charge`, with their original validity
   flags and type applicability.
+- Signed `dz` in mm and `dz_valid`, applicable to electrons and muons.
+- Twelve decoded jet-only b-tag decisions: `btag_{loose,medium,tight}` and
+  their `_mtd` variants, plus the equivalent `btag_phys_*` decisions. They
+  share `btag_valid` and `btag_phys_valid`, respectively, separately for each
+  member. For example, `btag_medium_1` requires `btag_valid_1` and
+  `btag_medium_2` requires `btag_valid_2`. Non-jets and invalid masks never
+  become valid untagged jets. See the [object-feature definitions](README.md#output-and-compatibility)
+  for raw sources, bit meanings, and fast-simulation limitations.
 - Two additional coordinate guards per member: `eta_valid_1`, `phi_valid_1`,
   `eta_valid_2`, and `phi_valid_2`.
 
-The remaining 24 columns are 12 pair properties and their `<name>_valid` flags:
+The original 68 pair columns keep their positions: two original 20-column
+members, four coordinate guards, and the 24 derived columns below. The new
+14-column b-tag block for member 1 and then member 2 follows. These first 96
+columns stay fixed. The six new columns are appended in this order:
+`dz_1`, `dz_valid_1`, `dz_2`, `dz_valid_2`, `abs_delta_dz`, `abs_delta_dz_valid`.
+This gives 102 columns in total. Reconvert both classes and remake mixtures
+to use them; existing PT files are not changed automatically.
+
+There are 13 pair properties and their `<name>_valid` flags:
 
 | Pair property | Definition |
 | --- | --- |
@@ -92,6 +108,16 @@ The remaining 24 columns are 12 pair properties and their `<name>_valid` flags:
 | `min_abs_d0` | Smaller absolute D0, mm; requires two valid measurements |
 | `opposite_sign` | Opposite charges; valid only for two electrons/muons with known charges `+/-1` |
 | `opposite_eta_hemispheres` | Whether the two eta values have strictly opposite signs |
+| `abs_delta_dz` | `abs(dz_1 - dz_2)` in mm; requires two valid electron/muon DZ values |
+
+DZ differences use the signed raw values before float32 rounding. A physical
+zero difference is valid. Pairs with a photon, jet, missing member, or invalid
+member DZ have zero difference and a false guard. DZ does not require valid
+eta/phi, D0, or `ErrorDZ`. A common longitudinal shift cancels in the pair
+difference; individual DZ values retain the producer beam-spot/origin reference.
+The audited production does not smear DZ with realistic tracking resolution,
+so tight compatibility cuts need that limitation considered. See
+[the source audit](IMPACT_PARAMETERS.md#longitudinal-impact-parameters).
 
 Mass uses valid stored jet `Mass`, massless photons, and fixed muon/electron
 masses of 0.1056583755/0.00051099895 GeV from the
@@ -102,8 +128,9 @@ Undefined or nonfinite derived results are zero-filled with a false guard.
 Measured zeros can be valid. Finite member values exceeding float32 storage
 raise an error rather than silently overflowing.
 
-To add pair properties later, extend `PAIR_FEATURES` and their calculations in
-`pairs.py`. Column names, guard entries, and tensor width follow that mapping.
+To add pair properties later, extend `PAIR_FEATURES`, append their value/guard
+names to `PAIR_COLUMNS`, and add their calculations in `pairs.py`. Append
+columns to preserve existing indices; schemas follow the named column order.
 
 ## Core ERL interface
 
@@ -163,18 +190,19 @@ it checks original cut histories, not simplified displayed conditions.
 After converting both classes with `--with-pair-tensor` and mixing them:
 
 ```bash
-python casual_tests/run_ERL_Gini_nested.py \
-  --signal data/example_mixture/anomalous.pt \
-  --background data/example_mixture/reference.pt \
+python scripts/split_train_validation.py --input-dir data/example_mixture --train-fraction 0.8
+python casual_tests/train_ERL_validation.py \
+  --signal data/example_mixture/anomalous_train.pt \
+  --background data/example_mixture/reference_train.pt \
   --pair-tensor --object-only \
   --progress \
   --object-cut-priority type_id_1 type_id_2 \
-  --reference-penalty 10 \
+  --beam-reference-penalty 10 --pruning-reference-penalty 10 \
   --stricter-score-improvement 0.001 \
   --beam-similarity-filter --final-similarity-filter \
   --signal-similarity-threshold 0.9 --background-similarity-threshold 0.9 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40 \
-  --report reports/ERL_example_pairs.txt --overwrite-report
+  --output-prefix training_outputs/ERL_example_pairs --overwrite-output
 ```
 
 - `--pair-tensor` (alias `--use-pair-tensor`) replaces single-particle `obj`
@@ -188,7 +216,7 @@ python casual_tests/run_ERL_Gini_nested.py \
 - Type priority is optional and explicitly specified, not automatically added.
   The current runner depth of four allows two type cuts followed by two
   property cuts, such as separate asymmetric PT thresholds. Longer sequences
-  require increasing the constructor's search depth or using the core API.
+  require increasing `--max-rule-depth` or using the core API.
 - Gini scoring, logical/similarity pruning and the rate filter are unchanged;
   their acceptances count events, not pairs. Validity flags remain guard-only
   unless `--allow-validity-cuts` is supplied.

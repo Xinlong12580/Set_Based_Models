@@ -1,6 +1,7 @@
 """Convert raw Parquet to event features and PT-ranked objects (no MET slot)."""
 
 import argparse
+from pathlib import Path
 
 from .convert import convert_raw_parquet_to_pt
 
@@ -8,10 +9,17 @@ from .convert import convert_raw_parquet_to_pt
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", nargs="+", required=True, help="Raw Parquet filenames or remote file URLs.")
-    parser.add_argument("--output", required=True, help="Local .pt file; existing outputs are overwritten with a warning.")
+    parser.add_argument("--output", required=True,
+                        help="Local .pt output/prefix. At most 10,000 events per PT; larger outputs "
+                             "use indexed files. Existing outputs are overwritten with a warning.")
     parser.add_argument("--no-overwrite", action="store_true", help="Fail if the output or source sidecar already exists.")
     parser.add_argument("--label", type=int, required=True, help="Stored process label, for diagnostics only.")
-    parser.add_argument("--max-events", type=int, help="Total row cap across inputs, after reading selected columns.")
+    parser.add_argument("--max-events", type=int,
+                        help="Total row cap; with --max-events-per-file, fail if this total cannot be reached.")
+    parser.add_argument("--max-events-per-file", type=int,
+                        help="Keep at most this many first rows from each file; default: no per-file cap.")
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True,
+                        help="Show conversion progress on stderr (default: on); disable with --no-progress.")
     parser.add_argument("--without-native-event-info", action="store_true")
     parser.add_argument("--with-pair-tensor", action="store_true",
                         help="Also save distinct particle pairs, member properties, pair features and masks.")
@@ -27,14 +35,18 @@ def main(argv=None):
     try:
         target = convert_raw_parquet_to_pt(
             args.input, args.output, label=args.label, max_events=args.max_events, thresholds=thresholds,
+            max_events_per_file=args.max_events_per_file,
             include_native_event_info=not args.without_native_event_info,
             include_met_features=not args.without_met_features,
             include_pair_tensor=args.with_pair_tensor,
             overwrite=not args.no_overwrite,
+            progress=args.progress,
         )
     except (OSError, TypeError, ValueError, KeyError) as error:
         parser.error(str(error))
-    print(f"Saved {target}")
+    for path in target if isinstance(target, list) else [target]:
+        print(f"Saved {path}")
+    print(f"Chunk index: {Path(args.output).expanduser().absolute().with_suffix('.chunks.json')}")
 
 
 if __name__ == "__main__":

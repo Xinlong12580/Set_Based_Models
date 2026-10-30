@@ -6,53 +6,21 @@ process label. Real objects and separate native_event_info are not used.
 Existing runners and model modules are unchanged.
 """
 
-from dataclasses import dataclass
 import argparse
 import math
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from set_based_models import EventCut, ExistentialRuleList, RuleStatistics  # noqa: E402
 from casual_tests import _event_only_reporting as event_reporting  # noqa: E402
 from casual_tests import _quantitative_reporting as reporting  # noqa: E402
-
-
-@dataclass(frozen=True)
-class ReferencePenalizedGini:
-    """A larger-is-better ERL score, using the full reference acceptance rate.
-
-    The penalty is applied during beam search, not just to final rankings.
-    Negative scores remain eligible: do not reject prefixes that can become
-    clean after another cut. Process labels never enter the objective.
-    """
-
-    reference_penalty: float = 1.0
-
-    def __post_init__(self):
-        if not math.isfinite(self.reference_penalty) or self.reference_penalty < 0:
-            raise ValueError("reference_penalty must be finite and nonnegative.")
-
-    def __call__(self, statistics: RuleStatistics) -> float:
-        return (reporting.gini_rule_score(statistics)
-                - self.reference_penalty * statistics.false_positive_rate)
-
-
-def _nonnegative_float(value):
-    result = float(value)
-    if not math.isfinite(result) or result < 0:
-        raise argparse.ArgumentTypeError("value must be finite and nonnegative")
-    return result
-
-
-def _similarity_threshold(value):
-    result = _nonnegative_float(value)
-    if result > 1:
-        raise argparse.ArgumentTypeError("similarity threshold must be between 0 and 1")
-    return result
+from casual_tests._erl_common import (  # noqa: E402
+    ReferencePenalizedGini, _nonnegative_float, _similarity_threshold,
+)
 
 
 def _print_rules(records, requested):

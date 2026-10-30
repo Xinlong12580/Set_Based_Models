@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from casual_tests import run_ERL_Gini_nested as runner
+from casual_tests.stale import train_ERL_pruned as runner
 from raw_event_conversion import build_object_tensor, build_pair_tensor, object_feature_schema, pair_feature_schema
 from raw_event_conversion.objects import OBJECT_COLUMNS
 from raw_event_conversion.pairs import PAIR_COLUMNS
@@ -67,12 +67,22 @@ class PairERLRunnerTests(unittest.TestCase):
     def test_pair_loader_uses_saved_mask_columns_and_guards(self):
         loaded = runner.load_dataset(self.signal, use_pairs=True)
         self.assertEqual(loaded.object_tensor_key, "pair_obj")
-        self.assertEqual(loaded.objects.shape, (12, 231, 68))
+        self.assertEqual(loaded.objects.shape, (12, 231, 102))
         np.testing.assert_array_equal(loaded.objects, self.samples[self.signal]["pair_obj"].numpy())
         np.testing.assert_array_equal(loaded.slot_mask, self.samples[self.signal]["pair_slot_mask"].numpy())
         self.assertEqual([spec.name for spec in loaded.object_observables], list(PAIR_COLUMNS))
         self.assertEqual(loaded.object_observables[PAIR_COLUMNS.index("eta_1")].validity_column, "eta_valid_1")
         self.assertEqual(loaded.object_observables[PAIR_COLUMNS.index("pair_mass")].validity_column, "pair_mass_valid")
+
+    def test_legacy_sixty_eight_column_pair_inputs_remain_supported(self):
+        sample = self.samples[self.signal]
+        sample["pair_obj"] = sample["pair_obj"][..., :68]
+        sample["pair_obj_columns"] = sample["pair_obj_columns"][:68]
+        sample["pair_obj_feature_schema"] = sample["pair_obj_feature_schema"][:68]
+        torch.save(sample, self.signal)
+        loaded = runner.load_dataset(self.signal, use_pairs=True)
+        self.assertEqual(loaded.objects.shape[-1], 68)
+        self.assertEqual([spec.name for spec in loaded.object_observables], list(PAIR_COLUMNS[:68]))
 
     def test_single_particles_remain_default_and_ignore_malformed_pairs(self):
         for key in ("pair_obj", "pair_slot_mask", "pair_obj_columns", "pair_obj_feature_schema"):
@@ -90,7 +100,7 @@ class PairERLRunnerTests(unittest.TestCase):
             del sample[key]
         torch.save(sample, self.signal)
         loaded = runner.load_dataset(self.signal, use_pairs=True, use_events=False)
-        self.assertEqual(loaded.objects.shape[-1], 68)
+        self.assertEqual(loaded.objects.shape[-1], 102)
         self.assertIsNone(loaded.event_features)
 
     def test_reordering_pair_columns_preserves_named_validation(self):
@@ -181,7 +191,7 @@ class PairERLRunnerTests(unittest.TestCase):
         self.assertTrue(report["configuration"]["pair_tensor"])
         self.assertIsNone(report["obj_feature_schema"])
         self.assertEqual(report["pair_obj_feature_schema"], json.loads(json.dumps(pair_feature_schema())))
-        self.assertEqual(report["inputs"]["signal"]["object_shape"], [12, 231, 68])
+        self.assertEqual(report["inputs"]["signal"]["object_shape"], [12, 231, 102])
         self.assertIn("EXISTS same pair", output.getvalue())
         self.assertIn("pair_slot_mask", output.getvalue())
         self.assertEqual(report["configuration"]["object_cut_priority"], ["type_id_1", "type_id_2"])
@@ -258,9 +268,9 @@ class PairERLRunnerTests(unittest.TestCase):
     def test_pair_default_report_name_is_distinct(self):
         with patch.object(runner.Path, "cwd", return_value=self.root), redirect_stdout(io.StringIO()):
             runner.main(self.args(["--pair-tensor", "--object-only", "--basic-object-features"], explicit_report=False))
-        reports = list((self.root / "reports").glob("*.txt"))
+        reports = list((self.root / "training_outputs").glob("*.report.json"))
         self.assertEqual(len(reports), 1)
-        self.assertTrue(reports[0].name.endswith("_pairs_basic_objects_object_only.txt"))
+        self.assertTrue(reports[0].name.endswith("_pairs_basic_objects_object_only.report.json"))
 
 
 if __name__ == "__main__":

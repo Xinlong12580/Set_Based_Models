@@ -1,0 +1,1406 @@
+{
+  "format": "collide2v_trigger_menu",
+  "schema_version": 2,
+  "object_selection": {
+    "isolation_enabled": true,
+    "electron_iso_max": 0.15,
+    "photon_iso_max": 0.15
+  },
+  "triggers": [
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleTkMuon_22",
+      "default_thresholds": {
+        "muon_pt": 22.0
+      },
+      "thresholds": {
+        "muon_pt": 22.0
+      },
+      "target_rate_khz": 17,
+      "scale_fields": [
+        "muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$muon_pt"
+        ],
+        "eta_max": 2.4
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkMuon_15_7",
+      "default_thresholds": {
+        "leading_muon_pt": 15.0,
+        "subleading_muon_pt": 7.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 15.0,
+        "subleading_muon_pt": 7.0
+      },
+      "target_rate_khz": 2,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$subleading_muon_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleTkElectron_36",
+      "default_thresholds": {
+        "electron_pt": 36.0
+      },
+      "thresholds": {
+        "electron_pt": 36.0
+      },
+      "target_rate_khz": 28,
+      "scale_fields": [
+        "electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "electrons",
+        "thresholds": [
+          "$electron_pt"
+        ],
+        "eta_max": 2.4
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleTkIsoElectron_28",
+      "default_thresholds": {
+        "electron_pt": 28.0
+      },
+      "thresholds": {
+        "electron_pt": 28.0
+      },
+      "target_rate_khz": 37,
+      "scale_fields": [
+        "electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "electrons",
+        "thresholds": [
+          "$electron_pt"
+        ],
+        "eta_max": 2.4,
+        "isolation": "@electron_iso_max"
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkIsoElectron_StaEG_22_12",
+      "default_thresholds": {
+        "electron_pt": 22.0,
+        "staeg_pt": 12.0
+      },
+      "thresholds": {
+        "electron_pt": 22.0,
+        "staeg_pt": 12.0
+      },
+      "target_rate_khz": 30,
+      "scale_fields": [
+        "electron_pt",
+        "staeg_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No dedicated StaEG collection is present in the supplied COLLIDE-2V columns."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkElectron_25_12",
+      "default_thresholds": {
+        "leading_electron_pt": 25.0,
+        "subleading_electron_pt": 12.0
+      },
+      "thresholds": {
+        "leading_electron_pt": 25.0,
+        "subleading_electron_pt": 12.0
+      },
+      "target_rate_khz": 14,
+      "scale_fields": [
+        "leading_electron_pt",
+        "subleading_electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "electrons",
+        "thresholds": [
+          "$leading_electron_pt",
+          "$subleading_electron_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleStaEG_51",
+      "default_thresholds": {
+        "staeg_pt": 51.0
+      },
+      "thresholds": {
+        "staeg_pt": 51.0
+      },
+      "target_rate_khz": 32,
+      "scale_fields": [
+        "staeg_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No dedicated StaEG collection is present in the supplied COLLIDE-2V columns."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleStaEG_37_24",
+      "default_thresholds": {
+        "leading_staeg_pt": 37.0,
+        "subleading_staeg_pt": 24.0
+      },
+      "thresholds": {
+        "leading_staeg_pt": 37.0,
+        "subleading_staeg_pt": 24.0
+      },
+      "target_rate_khz": 6,
+      "scale_fields": [
+        "leading_staeg_pt",
+        "subleading_staeg_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No dedicated StaEG collection is present in the supplied COLLIDE-2V columns."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleTkIsoPhoton_36",
+      "default_thresholds": {
+        "photon_pt": 36.0
+      },
+      "thresholds": {
+        "photon_pt": 36.0
+      },
+      "target_rate_khz": 39,
+      "scale_fields": [
+        "photon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "photons",
+        "thresholds": [
+          "$photon_pt"
+        ],
+        "eta_max": 2.4,
+        "isolation": "@photon_iso_max"
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkIsoPhoton_22_12",
+      "default_thresholds": {
+        "leading_photon_pt": 22.0,
+        "subleading_photon_pt": 12.0
+      },
+      "thresholds": {
+        "leading_photon_pt": 22.0,
+        "subleading_photon_pt": 12.0
+      },
+      "target_rate_khz": 20,
+      "scale_fields": [
+        "leading_photon_pt",
+        "subleading_photon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "photons",
+        "thresholds": [
+          "$leading_photon_pt",
+          "$subleading_photon_pt"
+        ],
+        "eta_max": 2.4,
+        "isolation": "@photon_iso_max"
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SingleCaloTau_150",
+      "default_thresholds": {
+        "calotau_pt": 150.0
+      },
+      "thresholds": {
+        "calotau_pt": 150.0
+      },
+      "target_rate_khz": 57,
+      "scale_fields": [
+        "calotau_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No CaloTau/tau collection is present in the supplied COLLIDE-2V columns."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleCaloTau_90_90",
+      "default_thresholds": {
+        "leading_calotau_pt": 90.0,
+        "subleading_calotau_pt": 90.0
+      },
+      "thresholds": {
+        "leading_calotau_pt": 90.0,
+        "subleading_calotau_pt": 90.0
+      },
+      "target_rate_khz": 64,
+      "scale_fields": [
+        "leading_calotau_pt",
+        "subleading_calotau_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No CaloTau/tau collection is present in the supplied COLLIDE-2V columns."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoublePuppiTau_52_52",
+      "default_thresholds": {
+        "leading_tau_pt": 52.0,
+        "subleading_tau_pt": 52.0
+      },
+      "thresholds": {
+        "leading_tau_pt": 52.0,
+        "subleading_tau_pt": 52.0
+      },
+      "target_rate_khz": 27,
+      "scale_fields": [
+        "leading_tau_pt",
+        "subleading_tau_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No reconstructed PuppiTau collection is present. LooseNN is ignored, but the tau object itself is still missing."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "SinglePuppiJet_230",
+      "default_thresholds": {
+        "jet_pt": 230.0
+      },
+      "thresholds": {
+        "jet_pt": 230.0
+      },
+      "target_rate_khz": 37,
+      "scale_fields": [
+        "jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "jets",
+        "thresholds": [
+          "$jet_pt"
+        ],
+        "eta_max": 2.4
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoublePuppiJet_112_112",
+      "default_thresholds": {
+        "leading_jet_pt": 112.0,
+        "subleading_jet_pt": 112.0
+      },
+      "thresholds": {
+        "leading_jet_pt": 112.0,
+        "subleading_jet_pt": 112.0
+      },
+      "target_rate_khz": 99,
+      "scale_fields": [
+        "leading_jet_pt",
+        "subleading_jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "jets",
+        "thresholds": [
+          "$leading_jet_pt",
+          "$subleading_jet_pt"
+        ],
+        "eta_max": 2.4,
+        "delta_eta_max": 1.6
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "PuppiHT_450",
+      "default_thresholds": {
+        "ht": 450.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "ht": 450.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 10,
+      "scale_fields": [
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "ht",
+        "pt_min": "$ht_jet_pt_min",
+        "threshold": "$ht",
+        "eta_max": 2.4
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "PuppiHT_135",
+      "default_thresholds": {
+        "ht": 135.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "ht": 135.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 15,
+      "scale_fields": [
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "ht",
+        "pt_min": "$ht_jet_pt_min",
+        "threshold": "$ht",
+        "eta_max": 2.4
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "QuadPuppiJets_PuppiHT_400_70_55_40_40",
+      "default_thresholds": {
+        "ht": 400.0,
+        "leading_jet_pt": 70.0,
+        "second_jet_pt": 55.0,
+        "third_jet_pt": 40.0,
+        "fourth_jet_pt": 40.0,
+        "ht_jet_pt_min": 25.0
+      },
+      "thresholds": {
+        "ht": 400.0,
+        "leading_jet_pt": 70.0,
+        "second_jet_pt": 55.0,
+        "third_jet_pt": 40.0,
+        "fourth_jet_pt": 40.0,
+        "ht_jet_pt_min": 25.0
+      },
+      "target_rate_khz": 10,
+      "scale_fields": [
+        "ht",
+        "leading_jet_pt",
+        "second_jet_pt",
+        "third_jet_pt",
+        "fourth_jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "jets",
+            "thresholds": [
+              "$leading_jet_pt",
+              "$second_jet_pt",
+              "$third_jet_pt",
+              "$fourth_jet_pt"
+            ],
+            "eta_max": 2.4,
+            "pt_floor": "$ht_jet_pt_min"
+          },
+          {
+            "op": "ht",
+            "pt_min": "$ht_jet_pt_min",
+            "threshold": "$ht",
+            "eta_max": 2.4
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "PuppiETmiss_200",
+      "default_thresholds": {
+        "met": 200.0
+      },
+      "thresholds": {
+        "met": 200.0
+      },
+      "target_rate_khz": 30,
+      "scale_fields": [
+        "met"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "event",
+        "field": "met",
+        "comparison": ">=",
+        "threshold": "$met"
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_TkIsoElectron_7_20",
+      "default_thresholds": {
+        "muon_pt": 7.0,
+        "electron_pt": 20.0
+      },
+      "thresholds": {
+        "muon_pt": 7.0,
+        "electron_pt": 20.0
+      },
+      "target_rate_khz": 0,
+      "scale_fields": [
+        "muon_pt",
+        "electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "multi_group",
+        "groups": [
+          {
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "kind": "electrons",
+            "thresholds": [
+              "$electron_pt"
+            ],
+            "eta_max": 2.4,
+            "isolation": "@electron_iso_max"
+          }
+        ],
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_TkElectron_7_23",
+      "default_thresholds": {
+        "muon_pt": 7.0,
+        "electron_pt": 23.0
+      },
+      "thresholds": {
+        "muon_pt": 7.0,
+        "electron_pt": 23.0
+      },
+      "target_rate_khz": 2,
+      "scale_fields": [
+        "muon_pt",
+        "electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "multi_group",
+        "groups": [
+          {
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "kind": "electrons",
+            "thresholds": [
+              "$electron_pt"
+            ],
+            "eta_max": 2.4
+          }
+        ],
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkElectron_TkMuon_10_20",
+      "default_thresholds": {
+        "electron_pt": 10.0,
+        "muon_pt": 20.0
+      },
+      "thresholds": {
+        "electron_pt": 10.0,
+        "muon_pt": 20.0
+      },
+      "target_rate_khz": 2,
+      "scale_fields": [
+        "electron_pt",
+        "muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "multi_group",
+        "groups": [
+          {
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "kind": "electrons",
+            "thresholds": [
+              "$electron_pt"
+            ],
+            "eta_max": 2.4
+          }
+        ],
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TripleTkMuon_5_3_3",
+      "default_thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 3.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 3.0
+      },
+      "target_rate_khz": 3,
+      "scale_fields": [
+        "leading_muon_pt",
+        "second_muon_pt",
+        "third_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$second_muon_pt",
+          "$third_muon_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_DoubleTkElectron_17_17_6",
+      "default_thresholds": {
+        "muon_pt": 17.0,
+        "leading_electron_pt": 17.0,
+        "subleading_electron_pt": 6.0
+      },
+      "thresholds": {
+        "muon_pt": 17.0,
+        "leading_electron_pt": 17.0,
+        "subleading_electron_pt": 6.0
+      },
+      "target_rate_khz": 0,
+      "scale_fields": [
+        "muon_pt",
+        "leading_electron_pt",
+        "subleading_electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "multi_group",
+        "groups": [
+          {
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "kind": "electrons",
+            "thresholds": [
+              "$leading_electron_pt",
+              "$subleading_electron_pt"
+            ],
+            "eta_max": 2.4
+          }
+        ],
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkMuon_TkElectron_9_5_5",
+      "default_thresholds": {
+        "leading_muon_pt": 9.0,
+        "subleading_muon_pt": 5.0,
+        "electron_pt": 5.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 9.0,
+        "subleading_muon_pt": 5.0,
+        "electron_pt": 5.0
+      },
+      "target_rate_khz": 2,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt",
+        "electron_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "multi_group",
+        "groups": [
+          {
+            "kind": "muons",
+            "thresholds": [
+              "$leading_muon_pt",
+              "$subleading_muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "kind": "electrons",
+            "thresholds": [
+              "$electron_pt"
+            ],
+            "eta_max": 2.4
+          }
+        ],
+        "dz": true,
+        "dz_max": 10.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "PuppiTau_TkMuon_18_42",
+      "default_thresholds": {
+        "tau_pt": 18.0,
+        "muon_pt": 42.0
+      },
+      "thresholds": {
+        "tau_pt": 18.0,
+        "muon_pt": 42.0
+      },
+      "target_rate_khz": 5,
+      "scale_fields": [
+        "tau_pt",
+        "muon_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No reconstructed PuppiTau collection is present. LooseNN is ignored, but the tau object itself is still missing."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkIsoElectron_PuppiTau_22_45",
+      "default_thresholds": {
+        "electron_pt": 22.0,
+        "tau_pt": 45.0
+      },
+      "thresholds": {
+        "electron_pt": 22.0,
+        "tau_pt": 45.0
+      },
+      "target_rate_khz": 27,
+      "scale_fields": [
+        "electron_pt",
+        "tau_pt"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No reconstructed PuppiTau collection is present. LooseNN is ignored, but the tau object itself is still missing."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_PuppiHT_6_320",
+      "default_thresholds": {
+        "muon_pt": 6.0,
+        "ht": 320.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "muon_pt": 6.0,
+        "ht": 320.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 2,
+      "scale_fields": [
+        "muon_pt",
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "op": "ht",
+            "pt_min": "$ht_jet_pt_min",
+            "threshold": "$ht",
+            "eta_max": 2.4
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_TriplePuppiJet_12_40_40_40",
+      "default_thresholds": {
+        "muon_pt": 12.0,
+        "leading_jet_pt": 40.0,
+        "second_jet_pt": 40.0,
+        "third_jet_pt": 40.0
+      },
+      "thresholds": {
+        "muon_pt": 12.0,
+        "leading_jet_pt": 40.0,
+        "second_jet_pt": 40.0,
+        "third_jet_pt": 40.0
+      },
+      "target_rate_khz": 7,
+      "scale_fields": [
+        "muon_pt",
+        "leading_jet_pt",
+        "second_jet_pt",
+        "third_jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "matched_groups",
+        "first": {
+          "kind": "muons",
+          "thresholds": [
+            "$muon_pt"
+          ],
+          "eta_max": 2.4
+        },
+        "second": {
+          "kind": "jets",
+          "thresholds": [
+            "$leading_jet_pt",
+            "$second_jet_pt",
+            "$third_jet_pt"
+          ],
+          "eta_max": 2.4
+        },
+        "dr_max": 0.4,
+        "second_delta_eta_pair": [
+          1,
+          2
+        ],
+        "second_delta_eta_max": 1.6
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkElectron_PuppiHT_8_8_390",
+      "default_thresholds": {
+        "leading_electron_pt": 8.0,
+        "subleading_electron_pt": 8.0,
+        "ht": 390.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "leading_electron_pt": 8.0,
+        "subleading_electron_pt": 8.0,
+        "ht": 390.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 7,
+      "scale_fields": [
+        "leading_electron_pt",
+        "subleading_electron_pt",
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "electrons",
+            "thresholds": [
+              "$leading_electron_pt",
+              "$subleading_electron_pt"
+            ],
+            "eta_max": 2.4,
+            "dz": true,
+            "dz_max": 10.0
+          },
+          {
+            "op": "ht",
+            "pt_min": "$ht_jet_pt_min",
+            "threshold": "$ht",
+            "eta_max": 2.4
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkMuon_PuppiHT_3_3_300",
+      "default_thresholds": {
+        "leading_muon_pt": 3.0,
+        "subleading_muon_pt": 3.0,
+        "ht": 300.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 3.0,
+        "subleading_muon_pt": 3.0,
+        "ht": 300.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 1,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt",
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "muons",
+            "thresholds": [
+              "$leading_muon_pt",
+              "$subleading_muon_pt"
+            ],
+            "eta_max": 2.4,
+            "dz": true,
+            "dz_max": 10.0
+          },
+          {
+            "op": "ht",
+            "pt_min": "$ht_jet_pt_min",
+            "threshold": "$ht",
+            "eta_max": 2.4
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "DoubleTkMuon_PuppiJet_PuppiETmiss_3_3_60_130",
+      "default_thresholds": {
+        "leading_muon_pt": 3.0,
+        "subleading_muon_pt": 3.0,
+        "jet_pt": 60.0,
+        "met": 130.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 3.0,
+        "subleading_muon_pt": 3.0,
+        "jet_pt": 60.0,
+        "met": 130.0
+      },
+      "target_rate_khz": 7,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt",
+        "jet_pt",
+        "met"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "muons",
+            "thresholds": [
+              "$leading_muon_pt",
+              "$subleading_muon_pt"
+            ],
+            "eta_max": 2.4,
+            "dz": true,
+            "dz_max": 10.0
+          },
+          {
+            "op": "group",
+            "kind": "jets",
+            "thresholds": [
+              "$jet_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "op": "event",
+            "field": "met",
+            "comparison": ">=",
+            "threshold": "$met"
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkIsoElectron_PuppiHT_26_190",
+      "default_thresholds": {
+        "electron_pt": 26.0,
+        "ht": 190.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "thresholds": {
+        "electron_pt": 26.0,
+        "ht": 190.0,
+        "ht_jet_pt_min": 30.0
+      },
+      "target_rate_khz": 13,
+      "scale_fields": [
+        "electron_pt",
+        "ht"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "electrons",
+            "thresholds": [
+              "$electron_pt"
+            ],
+            "eta_max": 2.4,
+            "isolation": "@electron_iso_max"
+          },
+          {
+            "op": "ht",
+            "pt_min": "$ht_jet_pt_min",
+            "threshold": "$ht",
+            "eta_max": 2.4
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkElectron_PuppiJet_28_40",
+      "default_thresholds": {
+        "electron_pt": 28.0,
+        "jet_pt": 40.0
+      },
+      "thresholds": {
+        "electron_pt": 28.0,
+        "jet_pt": 40.0
+      },
+      "target_rate_khz": 48,
+      "scale_fields": [
+        "electron_pt",
+        "jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "matched_groups",
+        "first": {
+          "kind": "electrons",
+          "thresholds": [
+            "$electron_pt"
+          ],
+          "eta_max": 2.1
+        },
+        "second": {
+          "kind": "jets",
+          "thresholds": [
+            "$jet_pt"
+          ],
+          "eta_max": 2.4
+        },
+        "dr_min": 0.3
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "PuppiTau_PuppiETmiss_55_190",
+      "default_thresholds": {
+        "tau_pt": 55.0,
+        "met": 190.0
+      },
+      "thresholds": {
+        "tau_pt": 55.0,
+        "met": 190.0
+      },
+      "target_rate_khz": 10,
+      "scale_fields": [
+        "tau_pt",
+        "met"
+      ],
+      "scan_mode": "scale",
+      "unavailable_reason": "No reconstructed PuppiTau collection is present. LooseNN is ignored, but the tau object itself is still missing."
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "TkMuon_PuppiJet_PuppiETmiss_3_110_120",
+      "default_thresholds": {
+        "muon_pt": 3.0,
+        "jet_pt": 110.0,
+        "met": 120.0
+      },
+      "thresholds": {
+        "muon_pt": 3.0,
+        "jet_pt": 110.0,
+        "met": 120.0
+      },
+      "target_rate_khz": 57,
+      "scale_fields": [
+        "muon_pt",
+        "jet_pt",
+        "met"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "all",
+        "conditions": [
+          {
+            "op": "group",
+            "kind": "muons",
+            "thresholds": [
+              "$muon_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "op": "group",
+            "kind": "jets",
+            "thresholds": [
+              "$jet_pt"
+            ],
+            "eta_max": 2.4
+          },
+          {
+            "op": "event",
+            "field": "met",
+            "comparison": ">=",
+            "threshold": "$met"
+          }
+        ]
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "VBF_DoublePuppiJets_160_35_mjj620",
+      "default_thresholds": {
+        "leading_jet_pt": 160.0,
+        "subleading_jet_pt": 35.0
+      },
+      "thresholds": {
+        "leading_jet_pt": 160.0,
+        "subleading_jet_pt": 35.0
+      },
+      "target_rate_khz": 42,
+      "scale_fields": [
+        "leading_jet_pt",
+        "subleading_jet_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "jets",
+        "thresholds": [
+          "$leading_jet_pt",
+          "$subleading_jet_pt"
+        ],
+        "eta_max": 5.0,
+        "mass_min": 620.0
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "BPH_DoubleTkMuon_2_2",
+      "default_thresholds": {
+        "leading_muon_pt": 2.0,
+        "subleading_muon_pt": 2.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 2.0,
+        "subleading_muon_pt": 2.0
+      },
+      "target_rate_khz": 13,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$subleading_muon_pt"
+        ],
+        "eta_max": 1.5,
+        "dz": true,
+        "dr_max": 1.4,
+        "dz_max": 10.0,
+        "opposite_charge": true
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "BPH_DoubleTkMuon_4_4_DR1p5",
+      "default_thresholds": {
+        "leading_muon_pt": 4.0,
+        "subleading_muon_pt": 4.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 4.0,
+        "subleading_muon_pt": 4.0
+      },
+      "target_rate_khz": 7,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$subleading_muon_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "dr_max": 1.5,
+        "dz_max": 10.0,
+        "opposite_charge": true
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "BPH_DoubleTkMuon_4_4_m7_18",
+      "default_thresholds": {
+        "leading_muon_pt": 4.0,
+        "subleading_muon_pt": 4.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 4.0,
+        "subleading_muon_pt": 4.0
+      },
+      "target_rate_khz": 3,
+      "scale_fields": [
+        "leading_muon_pt",
+        "subleading_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$subleading_muon_pt"
+        ],
+        "eta_max": 2.0,
+        "dz": true,
+        "mass_window": [
+          7.0,
+          18.0
+        ],
+        "dz_max": 10.0,
+        "opposite_charge": true,
+        "pair_mass_hypothesis": 0.1056583755
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "BPH_TripleTkMuon_5_3_0_m0_9",
+      "default_thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 0.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 0.0
+      },
+      "target_rate_khz": 1,
+      "scale_fields": [
+        "leading_muon_pt",
+        "second_muon_pt",
+        "third_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$second_muon_pt",
+          "$third_muon_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "mass_window": [
+          0.0,
+          9.0
+        ],
+        "dz_max": 10.0,
+        "opposite_charge": true,
+        "pair_mass_hypothesis": 0.1056583755
+      }
+    },
+    {
+      "format": "collide2v_trigger",
+      "schema_version": 1,
+      "type": "selection",
+      "name": "BPH_TripleTkMuon_5_3_2_m5_17",
+      "default_thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 2.0
+      },
+      "thresholds": {
+        "leading_muon_pt": 5.0,
+        "second_muon_pt": 3.0,
+        "third_muon_pt": 2.0
+      },
+      "target_rate_khz": 0,
+      "scale_fields": [
+        "leading_muon_pt",
+        "second_muon_pt",
+        "third_muon_pt"
+      ],
+      "scan_mode": "scale",
+      "selection": {
+        "op": "group",
+        "kind": "muons",
+        "thresholds": [
+          "$leading_muon_pt",
+          "$second_muon_pt",
+          "$third_muon_pt"
+        ],
+        "eta_max": 2.4,
+        "dz": true,
+        "mass_window": [
+          5.0,
+          17.0
+        ],
+        "dz_max": 10.0,
+        "opposite_charge": true,
+        "pair_mass_hypothesis": 0.1056583755
+      }
+    }
+  ]
+}

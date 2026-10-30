@@ -250,6 +250,8 @@ def prune_rule_candidates(
     similarity_filter=True, signal_similarity_threshold=0.95,
     background_similarity_threshold=0.95,
     required_object_cut_priority=(),
+    required_object_cut_priority_by_rule=None,
+    signal_jaccard=None, background_jaccard=None,
 ):
     """Select completed rules without changing the original candidate pool.
 
@@ -258,7 +260,9 @@ def prune_rule_candidates(
     rather than simplified predicates, preserving repeats and directions.
     Logical normalization/containment separates event and same-slot predicates,
     and respects minimum object counts. None disables logical pruning.
-    Acceptance limits are per-rule weighted training fractions, not OR budgets.
+    Acceptance limits use per-rule weighted fractions in the current statistics,
+    not OR budgets. Masks or saved event Jaccard matrices and scores must
+    describe the same dataset. Matrix axes use candidate rule IDs.
     """
     if stricter_score_improvement is not None and not math.isfinite(stricter_score_improvement):
         raise ValueError("stricter_score_improvement must be finite or None.")
@@ -289,8 +293,9 @@ def prune_rule_candidates(
     }
     eligible = []
     for rule in rules:
-        if (_object_priority_progress(rule.cuts, required_object_cut_priority, rule.observables)
-                < len(required_object_cut_priority)):
+        priority = (required_object_cut_priority if required_object_cut_priority_by_rule is None else
+                    required_object_cut_priority_by_rule.get(rule.rule_id, required_object_cut_priority))
+        if _object_priority_progress(rule.cuts, priority, rule.observables) < len(priority):
             decisions[rule.rule_id]["status"] = "incomplete_object_priority"
         elif (max_reference_acceptance is not None
                 and rule.statistics.false_positive_rate > max_reference_acceptance):
@@ -310,14 +315,21 @@ def prune_rule_candidates(
         result = RulePruningResult(tuple(eligible), decisions, normalized)
     if similarity_filter:
         retained = []
+        cached = signal_jaccard is not None and background_jaccard is not None
+
+        def similar(left, right):
+            signal_overlap = (signal_jaccard[left.rule_id, right.rule_id] if cached else
+                              _jaccard(left.signal_selection, right.signal_selection))
+            background_overlap = (background_jaccard[left.rule_id, right.rule_id] if cached else
+                                  _jaccard(left.background_selection, right.background_selection))
+            return signal_overlap >= signal_similarity_threshold and background_overlap >= background_similarity_threshold
+
         for rule in result.retained:
-            if rule.signal_selection is None or rule.background_selection is None:
-                raise RuntimeError("Candidate rules do not contain training masks; fit the model before pruning")
+            if not cached and (rule.signal_selection is None or rule.background_selection is None):
+                raise RuntimeError("Candidate rules have neither saved Jaccard matrices nor training masks or recalculated masks; "
+                                   "call recalculate_candidates() before similarity pruning")
             witness = next((previous for previous in retained
-                            if _jaccard(rule.signal_selection, previous.signal_selection)
-                            >= signal_similarity_threshold
-                            and _jaccard(rule.background_selection, previous.background_selection)
-                            >= background_similarity_threshold), None)
+                            if similar(rule, previous)), None)
             if witness is None:
                 retained.append(rule)
             else:

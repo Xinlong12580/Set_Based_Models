@@ -2,7 +2,7 @@
 
 Example (from the repository root)::
 
-    python casual_tests/run_ERL_Gini_event_only.py \
+    python casual_tests/stale/run_ERL_Gini_event_only.py \
         --signal data/ZZ_event_features/anomalous.pt \
         --background data/ZZ_event_features/reference.pt \
         --report reports/ERL_ZZ_event_only.txt
@@ -17,7 +17,7 @@ compatible with scripts/plot_acceptance_report.py.
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 

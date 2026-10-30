@@ -78,3 +78,28 @@ For a realistic L1 displaced-trigger study, validate the producer's displaced
 tracking efficiency, D0 resolution and uncertainties, reference convention,
 and candidate truncation. Fixing/regenerating simulation is outside this
 preprocessing change; an arbitrary uncertainty must not be substituted here.
+
+## Longitudinal impact parameters
+
+DZ was checked against the same pinned production sources on 2026-10-28.
+`L1T_Electron_DZ` and `L1T_MuonTight_DZ` are signed lengths in **mm**.
+`ParticlePropagator` computes `dz = zd - bsz`: the longitudinal coordinate
+at transverse closest approach to the z axis, minus the beam-spot z coordinate.
+It stores `DZ = dz * 1e3`, converting its internal meters back to millimeters.
+The checked card configures no beam-spot producer, so the reference falls
+back to the coordinate origin. This is not DZ relative to a reconstructed PV.
+
+The object tensor appends `dz` and `dz_valid`; the pair tensor copies both
+members and appends `abs_delta_dz = abs(dz_1 - dz_2)` with its own guard.
+Only finite DZ on a present electron/muon is valid. Invalid or inapplicable
+values are zero-filled with false guards; a physical zero remains valid.
+No absolute value is applied before the difference. `ErrorDZ` is not read,
+and no significance, resolution smearing, vertex reassignment or rescaling
+is introduced. The event tensor is unchanged.
+
+The checked execution path has no `TrackSmearing`; momentum/energy smearing
+preserves DZ, and `TreeWriter` copies it to output objects. Therefore these
+DZ values are truth-trajectory-derived, without realistic DZ resolution.
+A limited read-only check of the first 32 events of the minbias file above
+found zero `ErrorDZ` for all stored PF/PUPPI candidates and the one present
+tight muon. It does not establish availability across all shards or revisions.

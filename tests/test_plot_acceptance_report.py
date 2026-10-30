@@ -4,7 +4,10 @@ from contextlib import redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -63,6 +66,35 @@ class AcceptanceReportPlotTests(unittest.TestCase):
                 main([str(report), "--output", str(output), "--top", "1"])
             self.assertTrue(output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"))
             self.assertIn(str(output), stdout.getvalue())
+
+    def test_training_report_default_plot_name(self):
+        from scripts.plot_acceptance_report import main
+
+        with tempfile.TemporaryDirectory() as temporary:
+            report = Path(temporary) / "training.report.json"
+            report.write_text(json.dumps(self.report()), encoding="utf-8")
+            with redirect_stdout(io.StringIO()):
+                main([str(report), "--top", "1"])
+            self.assertTrue((report.parent / "training.acceptance.png").read_bytes().startswith(b"\x89PNG"))
+
+    def test_batch_plotting_includes_training_and_legacy_reports_but_not_models(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name in ("training.report.json", "training.model.json", "legacy.txt"):
+                (directory / name).write_text("{}")
+            calls = directory / "calls.jsonl"
+            python = directory / "mock-python"
+            python.write_text(f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+                              f"with Path({str(calls)!r}).open('a') as handle:\n    handle.write(json.dumps(sys.argv[1:]) + '\\n')\n")
+            python.chmod(0o755)
+            result = subprocess.run(["bash", str(root / "scripts/plot_all_reports.sh"), str(directory)],
+                                    env={**os.environ, "PYTHON_BIN": str(python)}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = [json.loads(line) for line in calls.read_text().splitlines()]
+            self.assertEqual([Path(call[1]).name for call in args], ["training.report.json", "legacy.txt"])
+            self.assertEqual([Path(call[call.index("--output") + 1]).name for call in args],
+                             ["training.acceptance.png", "legacy_acceptance.png"])
 
 
 if __name__ == "__main__":

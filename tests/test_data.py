@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from set_based_dt.data import ObservableKind, ObservableSpec, SetInput
+from set_based_models.core.data import ObservableKind, ObservableSpec, SetInput
 
 
 SPECS = (

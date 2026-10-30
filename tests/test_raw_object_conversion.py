@@ -22,7 +22,7 @@ class RawObjectTensorTests(unittest.TestCase):
         for kind, prefix in (("jets", "L1T_JetPuppiAK4"), ("muons", "L1T_MuonTight"),
                              ("electrons", "L1T_Electron"), ("photons", "L1T_PhotonTight")):
             records = with_pt(records, ak.Array([[10, 50, 30]]), prefix + "_PT")
-            values = {"D0": [0, -2, np.nan], "IsolationVarRhoCorr": [0, .25, None],
+            values = {"D0": [0, -2, np.nan], "DZ": [0, -20, np.nan], "IsolationVarRhoCorr": [0, .25, None],
                       "Mass": [0, 12, -1], "NCharged": [0, 3, 1], "NNeutrals": [0, 1, 3],
                       "EhadOverEem": [0, .15, None], "Charge": [1, -1, 0]}
             for _, (suffix, types, _, _) in OBJECT_FEATURES.items():
@@ -49,7 +49,7 @@ class RawObjectTensorTests(unittest.TestCase):
 
     def test_layout_caps_type_ids_and_padding(self):
         objects = build_object_tensor(raw_fixture())
-        self.assertEqual(tuple(objects.shape), (3, 22, 20))
+        self.assertEqual(tuple(objects.shape), (3, 22, 36))
         self.assertEqual(objects.dtype, torch.float32)
         self.assertFalse(bool(objects[0].any()))
         self.assertEqual(OBJECT_COLUMNS[:4], ("pt", "eta", "phi", "type_id"))
@@ -90,7 +90,7 @@ class RawObjectTensorTests(unittest.TestCase):
             records = ak.Array({column: entries for column in RAW_OBJECT_COLUMNS})
             with self.subTest(entries=entries):
                 objects = build_object_tensor(records)
-                self.assertEqual(tuple(objects.shape), (2, 22, 20))
+                self.assertEqual(tuple(objects.shape), (2, 22, 36))
                 self.assertFalse(bool(objects.any()))
 
     def test_no_met_or_unweighted_jet_fields_are_required(self):
@@ -125,7 +125,7 @@ class RawObjectTensorTests(unittest.TestCase):
             self.assertFalse(bool(data["obj"][0].any()))
             self.assertEqual(data["event_features"][2, :4].tolist(), [7, 8, 9, 15])
             meta = data["conversion_metadata"]
-            self.assertEqual(meta["schema_version"], 7)
+            self.assertEqual(meta["schema_version"], 11)
             self.assertTrue(meta["dummy_pf"])
             self.assertFalse(meta["dummy_pf_and_obj"])
             self.assertTrue(meta["object_truncation"])
@@ -150,7 +150,7 @@ class RawObjectTensorTests(unittest.TestCase):
             output = directory / "events.pt"
             convert_raw_parquet_to_pt(files, output, label=1, max_events=4)
             data = torch.load(output, weights_only=True)
-            self.assertEqual(tuple(data["obj"].shape), (4, 22, 20))
+            self.assertEqual(tuple(data["obj"].shape), (4, 22, 36))
             self.assertEqual(data["raw_source_file"].tolist(), [0, 0, 0, 1])
             self.assertFalse(bool(data["obj"][3].any()))
             torch.testing.assert_close(data["obj"][:3], build_object_tensor(raw_fixture()))
@@ -234,11 +234,11 @@ class RawObjectTensorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "matching object counts"):
             build_object_tensor(ak.with_field(records, [[0]], "L1T_JetPuppiAK4_Mass"))
 
-    def test_schema_covers_all_twenty_columns_and_correct_units(self):
+    def test_schema_covers_all_columns_and_correct_units(self):
         import json
         schema = object_feature_schema()
         self.assertEqual([field["name"] for field in schema], list(OBJECT_COLUMNS))
-        self.assertEqual(len(schema), 20)
+        self.assertEqual(len(schema), 36)
         fields = {field["name"]: field for field in schema}
         self.assertEqual(fields["abs_d0"]["units"], "mm")
         self.assertEqual(fields["abs_d0"]["definition"], "abs(D0)")

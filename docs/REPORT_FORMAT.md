@@ -2,7 +2,8 @@
 
 ## Scope and loading
 
-Quantitative EDT and ERL runners save JSON, commonly using a `.txt` extension:
+The ERL trainer saves `<prefix>.report.json` under `training_outputs/` by default.
+Legacy ERL and current EDT reports also use JSON, commonly with a `.txt` extension:
 
 ```python
 import json
@@ -34,11 +35,13 @@ no retained rules. A report with an unsupported version needs an explicit adapte
 | `format`, `schema_version` | Report-family identifier and structure version, not a Git/software version |
 | `created_utc` | Report creation timestamp in UTC |
 | `model` | Writer/model variant; inspect configuration as well |
+| `stage`, `trainer`, `outputs` | ERL training/validation marker, producing entry point, and model/report paths for that stage |
 | `class_semantics` | Input-source class definitions and purity warning |
 | `inputs.signal`, `inputs.background` | Mixture/reference descriptions: paths, counts, shapes, stored-label counts |
 | `object_observables`, `event_observables` | Ordered runtime feature names, kinds, categories, and optional guards |
 | `configuration` | Settings actually recorded for this run |
 | `summary` | Candidate/pruning counts or tree/default-selection statistics |
+| `self_pruning_provenance` | Optional local-shortening configuration, source candidate IDs, variant counts and per-output parent IDs |
 | `results.rules` | ERL candidates in full-pool score order |
 | `results.leaves` | EDT leaves in descending training mixture fraction |
 
@@ -82,23 +85,43 @@ scores/acceptances; the unit-weight runner makes them coincide.
 | Field | Meaning |
 | --- | --- |
 | `rule_id` | Stable ID within this candidate pool; not comparable across runs |
-| `rank` | One-based rank in the full capped pool; printed as `global_rank` |
+| `rank` | One-based rank in the full current candidate pool; printed as `global_rank` |
 | `pruned_rank` | One-based score rank among final retained rules; `null` when removed |
-| `depth` | Number of original explicit cuts; automatic guards do not add depth |
+| `depth` | Number of explicit cuts in this candidate; automatic guards do not add depth |
 | `effective_depth_after_simplification` | Number of simplified explicit predicates, not proof of priority completion |
 | `raw_rule`, `simplified_rule` | Human-readable original/simplified conditions |
-| `steps` | Original ordered prefix history, with counts and scores at each step |
+| `steps` | This candidate's ordered prefix history, with counts and scores at each step |
+| `self_pruning_parent_rule_ids` | Optional parent IDs in the merged pool before local shortening; distinct from current candidate IDs and original per-source training IDs |
 | `normalized_cuts` | Optional scope-aware simplified predicates |
 | `minimum_count` | Optional matching-slot requirement; event-only rules ignore it |
 | `score` | Optional explicit optimization score; present in the flexible penalized runner |
 | `gini_gain` | Whole-rule gain versus its complement on original input totals |
-| `reference_penalty_term` | Optional penalty coefficient times reference acceptance |
+| `reference_penalty_term` | Optional penalty coefficient times reference acceptance; `null` for excess/ratio scores |
 | `direction` | Same enrichment direction as `metrics.direction` |
 | `retained_after_final_pruning` | Authoritative final-retention flag when present |
 | `pruning` | Optional reason, witness and score comparison audit |
 
 Older pure-Gini reports lack `score`; their optimization score is `gini_gain`.
-The flexible runner uses `score = gini_gain - reference_penalty_term`.
+For `configuration.score_name=gini`, the flexible runner uses
+`score = gini_gain - reference_penalty_term`. Current runners also support
+`excess` and `ratio`; read `configuration.score_formula`, `score_parameters`
+and `score_delta` for the selected objective. The `gini_gain_role` field is
+`diagnostic_only` for these acceptance scores, and reference-penalty fields
+are `null`. Older reports without `score_name` retain their recorded formula.
+See [external scoring](ERL_SCORING.md).
+When `configuration.self_pruning_applied` is true, the current pool contains
+locally shortened rules and `configuration.self_prune_score_improvement` records
+the local threshold. `stricter_score_improvement` still describes final pruning.
+Summary fields `self_pruning_source_rule_count`,
+`self_pruning_evaluated_variant_count`, and
+`self_pruning_locally_retained_variant_count` describe the earlier expansion.
+The last count is before pooled deduplication; `candidate_rule_count` is after it.
+Source configurations continue to describe the original training searches.
+
+Optional `configuration.beam_novelty_weight` affects training beam retention and
+candidate capping, not these intrinsic rule/prefix scores or final pruning.
+See [novelty selection](ERL_BEAM_NOVELTY.md); absent weights in older reports
+mean the original score-only policy.
 Negative scores are legitimate. Its `retained_after_nested_pruning` and
 `retained_after_similarity_pruning` are compatibility aliases for **final**
 retention, not independent stage-by-stage survival records. Older reports may
@@ -129,7 +152,9 @@ Do not evaluate different slot conditions on independently chosen objects.
 
 Each ERL step records its depth, scope, cut, display, prefix accepted counts,
 acceptances and `prefix_gini_gain`. Penalized runners additionally record
-`prefix_score` and `prefix_reference_penalty_term`. These are whole-prefix
+`prefix_score` and `prefix_reference_penalty_term` (the latter is `null` for
+excess/ratio). `prefix_score` always uses the selected objective; Gini remains
+a diagnostic for acceptance scores. These are whole-prefix
 statistics, **not incremental gains** for the last added cut.
 
 ### Priority, pruning and rate fields
@@ -147,6 +172,7 @@ variants may use different policies; read their configuration.
 
 | `pruning.status` | Meaning |
 | --- | --- |
+| `not_pruned` | Training candidate saved before any final pruning; not a rejection |
 | `retained` | Kept after configured final filters |
 | `incomplete_object_priority` | Requested cut sequence not completed; no pruning witness |
 | `reference_rate_limit` | Reference acceptance exceeds the per-rule ceiling; no witness |
@@ -169,6 +195,11 @@ bounds or an OR-menu rate.
 
 The report saves the capped candidate pool, including final-pruned rules.
 It does not save every rejected expansion or candidate lost to the beam/cap.
+The train/validation trainer also saves an unpruned training report with
+`summary.final_pruning_applied=false`. Its retention flags are false and its
+selected list is empty because final selection has not run. Use `--rules all`
+when plotting that candidate pool. Validation reports set `stage=validation`
+and use recalculated statistics for ranking, rate estimates and pruning.
 
 ## EDT leaves and paths
 

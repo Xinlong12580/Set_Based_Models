@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -20,23 +20,10 @@ from set_based_models import ExistentialRuleList  # noqa: E402
 from casual_tests import _event_only_reporting as event_reporting  # noqa: E402
 from casual_tests import _quantitative_reporting as reporting  # noqa: E402
 from set_based_models.rule_list.pruning import prune_rule_candidates  # noqa: E402
-from casual_tests.run_ERL_Gini_penalized_event_only import (  # noqa: E402
+from casual_tests.stale.run_ERL_Gini_penalized_event_only import (  # noqa: E402
     ReferencePenalizedGini, _nonnegative_float, _print_rules, _similarity_threshold,
 )
-
-
-def _finite_float(value):
-    result = float(value)
-    if not math.isfinite(result):
-        raise argparse.ArgumentTypeError("value must be finite")
-    return result
-
-
-def _positive_float(value):
-    result = _finite_float(value)
-    if result <= 0:
-        raise argparse.ArgumentTypeError("value must be positive")
-    return result
+from casual_tests._erl_common import _finite_float, _positive_float  # noqa: E402
 
 
 def _prune_with_rate_limit(rules, *, min_score_improvement=0.0, max_reference_acceptance=None):

@@ -1,18 +1,7 @@
-"""Existential decision-tree model and training objectives."""
+"""Compatibility imports for the optional :mod:`set_based_edt` extension."""
 
-from .model import ChainEvaluation, ExistentialDecisionTree
-from .nodes import Branch, Node, NodeStatistics, PathStep
-from .objectives import (
-    DirectTPRFPRGain, SignificanceGain, WeightedGiniGain, entropy_gain,
-    gini_gain, make_direct_tpr_fpr_gain, make_significance_gain,
-    make_weighted_gini_gain, misclassification_gain,
-)
-from .training import PartitionStatistics, SplitStatistics
+from set_based_models import _load_edt
 
-__all__ = [
-    "Branch", "ChainEvaluation", "DirectTPRFPRGain", "ExistentialDecisionTree",
-    "Node", "NodeStatistics", "PartitionStatistics", "PathStep",
-    "SignificanceGain", "SplitStatistics", "WeightedGiniGain", "entropy_gain",
-    "gini_gain", "make_direct_tpr_fpr_gain", "make_significance_gain",
-    "make_weighted_gini_gain", "misclassification_gain",
-]
+_extension = _load_edt()
+__all__ = _extension.__all__
+globals().update({name: getattr(_extension, name) for name in __all__})

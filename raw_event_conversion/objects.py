@@ -21,8 +21,19 @@ OBJECT_FEATURES = {
     "charge": ("Charge", ("jets", "muons", "electrons"), "ordinal", "e"),
 }
 BASE_COLUMNS = ("pt", "eta", "phi", "type_id")
-OBJECT_COLUMNS = (*BASE_COLUMNS, *OBJECT_FEATURES,
-                  *(name + "_valid" for name in OBJECT_FEATURES))
+PROPERTY_COLUMNS = (*BASE_COLUMNS, *OBJECT_FEATURES,
+                    *(name + "_valid" for name in OBJECT_FEATURES))
+# COLLIDE2V v1.0 PUPPI AK4 working points. These are simulated decisions,
+# not continuous scores. Keep both alternative flavour definitions separate.
+BTAG_SOURCES = {"btag": "BTag", "btag_phys": "BTagPhys"}
+BTAG_WORKING_POINTS = {"loose": 0, "medium": 1, "tight": 2,
+                       "loose_mtd": 3, "medium_mtd": 4, "tight_mtd": 5}
+BTAG_COLUMNS = tuple(name for family in BTAG_SOURCES
+                     for name in (*(f"{family}_{wp}" for wp in BTAG_WORKING_POINTS), family + "_valid"))
+# Append DZ after freezing the existing property and b-tag column order.
+OBJECT_FEATURES["dz"] = ("DZ", ("muons", "electrons"), "continuous", "mm")
+DZ_COLUMNS = ("dz", "dz_valid")
+OBJECT_COLUMNS = (*PROPERTY_COLUMNS, *BTAG_COLUMNS, *DZ_COLUMNS)
 
 
 def _source_columns(kind):
@@ -31,6 +42,8 @@ def _source_columns(kind):
         **dict(zip(BASE_COLUMNS[:3], (PT_COLUMNS[kind], ETA_COLUMNS[kind], PHI_COLUMNS[kind]))),
         **{name: prefix + "_" + suffix for name, (suffix, types, _, _) in OBJECT_FEATURES.items()
            if suffix is not None and kind in types},
+        **{family + "_mask": prefix + "_" + suffix for family, suffix in BTAG_SOURCES.items()
+           if kind == "jets"},
     }
 
 
@@ -56,10 +69,27 @@ def object_feature_schema():
         schema.append({"name": name, "kind": kind, "units": units,
                        "applicable_types": list(types), "raw_columns": sources,
                        "definition": definition, "invalid_fill": 0, "validity_column": name + "_valid"})
+        if name == "dz":
+            schema[-1]["reference"] = "producer beam spot/origin; not recomputed relative to a primary vertex"
     schema.extend({"name": name + "_valid", "kind": "boolean", "units": "1",
                    "definition": "applicable, present and valid for this selected object",
                    "value_column": name} for name in OBJECT_FEATURES)
-    return schema
+    for family, suffix in BTAG_SOURCES.items():
+        names = [f"{family}_{wp}" for wp in BTAG_WORKING_POINTS]
+        for wp, bit in BTAG_WORKING_POINTS.items():
+            schema.append({"name": f"{family}_{wp}", "kind": "boolean", "units": "1",
+                           "applicable_types": ["jets"],
+                           "raw_columns": {"jets": [PT_COLUMNS["jets"].removesuffix("_PT") + "_" + suffix]},
+                           "definition": f"({suffix} & (1 << {bit})) != 0",
+                           "working_point": wp, "bit_number": bit,
+                           "flavor_definition": "Flavor" if family == "btag" else "FlavorPhys",
+                           "simulation": "flavour-dependent efficiency/mistag parameterization",
+                           "invalid_fill": 0, "validity_column": family + "_valid"})
+        schema.append({"name": family + "_valid", "kind": "boolean", "units": "1",
+                       "value_columns": names,
+                       "definition": "present jet with a finite, nonnegative uint32-compatible integer mask"})
+    by_name = {entry["name"]: entry for entry in schema}
+    return [by_name[name] for name in OBJECT_COLUMNS]
 
 
 def _rank_object_arrays(records):
@@ -89,6 +119,14 @@ def _rank_object_arrays(records):
         if "abs_d0" in ranked:
             ranked["abs_d0"] = np.abs(ranked["abs_d0"])
         if kind == "jets":
+            for family in BTAG_SOURCES:
+                mask = ranked.pop(family + "_mask")
+                valid = (np.isfinite(mask) & (mask >= 0) & (mask <= np.iinfo(np.uint32).max)
+                         & (mask == np.floor(mask)))
+                packed = np.where(valid, mask, 0).astype(np.uint32)
+                ranked[family + "_valid"] = valid
+                for wp, bit in BTAG_WORKING_POINTS.items():
+                    ranked[f"{family}_{wp}"] = (packed >> bit) & 1
             charged, neutral = ranked["n_charged"], ranked["n_neutrals"]
             counts_valid = (np.isfinite(charged) & np.isfinite(neutral)
                             & (charged >= 0) & (neutral >= 0)
@@ -116,12 +154,15 @@ def _rank_object_arrays(records):
 
 
 def build_object_tensor(records):
-    """Return float32 [events, 22, 20], preserving the original object format.
+    """Return float32 [events, 22, 36], preserving the previous 34 columns.
 
     Finite positive PT defines presence and stable within-type ranking. Extra
     measurements have schema-linked validity flags; eta/phi remain zero-filled
     without flags in this legacy object tensor. No additional physics cuts are
     applied. Event summaries are computed separately before slot caps.
+    Decoded BTag/BTagPhys decisions are jet-only, with one shared validity
+    guard per mask; packed masks and truth flavour are not model columns.
+    Signed electron/muon DZ is stored in mm with a finite-value validity guard.
     """
     objects, _ = _rank_object_arrays(records)
     if np.any(np.abs(objects) > np.finfo(np.float32).max):

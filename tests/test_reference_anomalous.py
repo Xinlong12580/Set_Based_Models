@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import warnings
+import weakref
 
 
 @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch is optional")
@@ -232,6 +233,247 @@ class ReferenceAnomalousTests(unittest.TestCase):
             self.assertEqual(exc.exception.code, 2)
             self.assertIn("Background and signal inputs must be different files", error.getvalue())
             self.assertFalse((root / "output").exists())
+
+    def chunk_inputs(self, root):
+        """Unequal chunks with real row identities and several tensor layouts."""
+        files = [[], []]
+        samples = []
+        for role, original, boundaries in ((0, self.minbias, (0, 7, 20)),
+                                            (1, self.zz, (0, 4, 10))):
+            count = len(original["label"])
+            sample = {**original,
+                      "pair_obj": original["obj"].clone(),
+                      "pair_slot_mask": self.torch.ones((count, 2), dtype=self.torch.bool),
+                      "raw_source_file": self.torch.arange(count) // 3,
+                      "raw_source_row": self.torch.arange(count) % 3,
+                      "pair_obj_columns": ["pt_1", "pt_2"]}
+            samples.append(sample)
+            name = "background" if role == 0 else "signal"
+            for index, (start, stop) in enumerate(zip(boundaries, boundaries[1:])):
+                path = root / f"{name}_{index:05d}.pt"
+                self.torch.save({key: value[start:stop] if isinstance(value, self.torch.Tensor) else value
+                                 for key, value in sample.items()}, path)
+                files[role].append(path)
+        args = ["--background", str(root / "background_*.pt"),
+                "--signal", str(root / "signal_*.pt"),
+                "--output-dir", str(root / "output"),
+                "--reference-count", "8", "--background-count", "5", "--signal-count", "3"]
+        return files, samples, args
+
+    def load_results(self, directory):
+        return tuple(self.torch.load(directory / f"{name}.pt", weights_only=True)
+                     for name in ("reference", "anomalous"))
+
+    def assert_datasets_equal(self, first, second):
+        for left, right in zip(first, second):
+            self.assertEqual(left.keys(), right.keys())
+            for key, value in left.items():
+                if isinstance(value, self.torch.Tensor):
+                    self.assertTrue(self.torch.equal(value, right[key]), key)
+                else:
+                    self.assertEqual(value, right[key], key)
+
+    def test_quoted_wildcards_preserve_all_tensors_sampling_and_file_row_provenance(self):
+        with tempfile.TemporaryDirectory(prefix="mixture with spaces ") as temporary:
+            root = Path(temporary)
+            groups, originals, args = self.chunk_inputs(root)
+            before_rng = self.torch.random.get_rng_state().clone()
+            with redirect_stdout(io.StringIO()):
+                self.main(args)
+            self.assertTrue(self.torch.equal(before_rng, self.torch.random.get_rng_state()))
+            results = self.load_results(root / "output")
+            baseline = self.make_datasets(*originals, **self.options)
+            inputs = groups[0] + groups[1]
+            source_chunks = [self.torch.load(path, weights_only=True) for path in inputs]
+            for result, expected in zip(results, baseline):
+                self.assertEqual(result["source_files"], [str(path) for path in inputs])
+                for key in originals[0]:
+                    if isinstance(expected[key], self.torch.Tensor):
+                        self.assertTrue(self.torch.equal(result[key], expected[key]), key)
+                    else:
+                        self.assertEqual(result[key], expected[key], key)
+                self.assertTrue(self.torch.equal(result["source_id"], expected["source_id"]))
+                ids = list(zip(result["source_file_index"].tolist(), result["source_index"].tolist()))
+                self.assertEqual(len(ids), len(set(ids)))
+                for row, (file_index, source_row) in enumerate(ids):
+                    self.assertEqual(int(result["source_id"][row]), int(file_index >= len(groups[0])))
+                    for key, value in source_chunks[file_index].items():
+                        if isinstance(value, self.torch.Tensor):
+                            self.assertTrue(self.torch.equal(result[key][row], value[source_row]), key)
+            reference_ids = set(zip(results[0]["source_file_index"].tolist(),
+                                    results[0]["source_index"].tolist()))
+            background_mask = results[1]["source_id"] == 0
+            mixture_ids = set(zip(results[1]["source_file_index"][background_mask].tolist(),
+                                  results[1]["source_index"][background_mask].tolist()))
+            self.assertFalse(reference_ids & mixture_ids)
+
+    def test_explicit_file_lists_match_quoted_patterns_and_are_reproducible(self):
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            groups, _, args = self.chunk_inputs(root)
+            self.main(args)
+            expected = self.load_results(root / "output")
+            expanded = ["--background", *map(str, groups[0]), "--signal", *map(str, groups[1]),
+                        *args[4:]]
+            expanded[expanded.index("--output-dir") + 1] = str(root / "explicit")
+            self.main(expanded)
+            self.assert_datasets_equal(expected, self.load_results(root / "explicit"))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                self.main(expanded)
+            self.assert_datasets_equal(expected, self.load_results(root / "explicit"))
+
+    def test_single_file_cli_matches_existing_python_api_exactly(self):
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            inputs, args = self.cli_inputs(root)
+            self.main(args)
+            expected = self.make_datasets(self.minbias, self.zz, **self.options)
+            for sample in expected:
+                sample["source_files"] = [str(path) for path in inputs]
+            self.assert_datasets_equal(expected, self.load_results(root / "output"))
+
+    def test_patterns_sort_matches_and_deduplicate_paths_symlinks_and_hardlinks(self):
+        from scripts.make_reference_anomalous import _expand_inputs
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            groups, _, _ = self.chunk_inputs(root)
+            link = root / "alias.pt"
+            hardlink = root / "hardlink.pt"
+            link.symlink_to(groups[0][0])
+            os.link(groups[0][1], hardlink)
+            self.assertEqual(
+                _expand_inputs([root / "background_*.pt", groups[0][0], link, hardlink]), groups[0])
+            self.assertEqual(_expand_inputs([groups[0][1], root / "background_*.pt"]),
+                             [groups[0][1], groups[0][0]])
+
+    def test_unmatched_patterns_and_missing_literals_fail_before_loading(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _, args = self.cli_inputs(root)
+            for expression in ("missing_*.pt", "missing.pt"):
+                with self.subTest(expression=expression), redirect_stderr(io.StringIO()), \
+                        patch("scripts.make_reference_anomalous.torch.load") as load:
+                    with self.assertRaises(SystemExit):
+                        self.main([*args, "--background", args[1], str(root / expression)])
+                    load.assert_not_called()
+                    self.assertFalse((root / "output").exists())
+
+    def test_pool_overlap_detects_nonfirst_files_and_file_aliases(self):
+        for alias in ("same_path", "symlink", "hardlink"):
+            with self.subTest(alias=alias), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                groups, _, args = self.chunk_inputs(root)
+                shared = groups[0][1]
+                if alias != "same_path":
+                    shared = root / "alias.pt"
+                    if alias == "symlink":
+                        shared.symlink_to(groups[0][1])
+                    else:
+                        os.link(groups[0][1], shared)
+                with redirect_stderr(io.StringIO()), \
+                        patch("scripts.make_reference_anomalous.torch.load") as load:
+                    with self.assertRaises(SystemExit):
+                        self.main([*args, "--signal", *map(str, groups[1]), str(shared)])
+                    load.assert_not_called()
+                self.assertFalse((root / "output").exists())
+
+    def test_later_schema_error_preserves_existing_outputs(self):
+        for error in ("metadata", "dtype", "shape", "keys", "alignment", "provenance"):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                groups, _, args = self.chunk_inputs(root)
+                bad = self.torch.load(groups[1][1], weights_only=True)
+                if error == "metadata":
+                    bad["obj_columns"] = ["eta", "pt"]
+                elif error == "dtype":
+                    bad["pair_obj"] = bad["pair_obj"].to(self.torch.float64)
+                elif error == "shape":
+                    bad["pair_obj"] = bad["pair_obj"][:, :1]
+                elif error == "keys":
+                    del bad["pair_obj"]
+                elif error == "alignment":
+                    bad["event_features"] = bad["event_features"][:-1]
+                else:
+                    bad["source_file_index"] = self.torch.zeros(len(bad["label"]), dtype=self.torch.int64)
+                self.torch.save(bad, groups[1][1])
+                output = root / "output"
+                output.mkdir()
+                targets = [output / f"{name}.pt" for name in ("reference", "anomalous")]
+                for path in targets:
+                    path.write_bytes(b"preserve previous output")
+                with redirect_stderr(io.StringIO()), warnings.catch_warnings(), \
+                        patch("scripts.make_reference_anomalous.torch.save") as save:
+                    warnings.simplefilter("ignore", UserWarning)
+                    with self.assertRaises(SystemExit):
+                        self.main(args)
+                    save.assert_not_called()
+                self.assertTrue(all(path.read_bytes() == b"preserve previous output" for path in targets))
+
+    def test_pool_size_checks_happen_before_publication(self):
+        for flag, value in (("--reference-count", "16"), ("--signal-count", "11")):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                _, _, args = self.chunk_inputs(root)
+                with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    self.main([*args, flag, value])
+                self.assertFalse((root / "output").exists())
+
+    def test_multiple_inputs_keep_output_protection_and_no_overwrite(self):
+        for mode in ("input_alias", "no_overwrite"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                groups, _, args = self.chunk_inputs(root)
+                output = root / "output"
+                output.mkdir()
+                target = output / "reference.pt"
+                if mode == "input_alias":
+                    os.link(groups[0][1], target)
+                else:
+                    target.write_bytes(b"previous reference")
+                    args.append("--no-overwrite")
+                before = target.read_bytes()
+                with redirect_stderr(io.StringIO()), \
+                        patch("scripts.make_reference_anomalous.torch.load") as load:
+                    with self.assertRaises(SystemExit):
+                        self.main(args)
+                    load.assert_not_called()
+                self.assertEqual(target.read_bytes(), before)
+                self.assertFalse((output / "anomalous.pt").exists())
+
+    def test_empty_chunks_are_allowed_and_not_selected(self):
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            _, originals, args = self.chunk_inputs(root)
+            empty = root / "empty.pt"
+            self.torch.save({key: value[:0] if isinstance(value, self.torch.Tensor) else value
+                             for key, value in originals[0].items()}, empty)
+            self.main([*args, "--background", str(empty), args[1]])
+            for sample in self.load_results(root / "output"):
+                self.assertFalse(bool((sample["source_file_index"] == 0).any()))
+
+    def test_only_one_source_file_is_held_and_unselected_files_are_not_reloaded(self):
+        with tempfile.TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            groups, _, args = self.chunk_inputs(root)
+            references, calls = [], []
+            original_load = self.torch.load
+
+            def load(path, **options):
+                self.assertTrue(all(reference() is None for reference in references))
+                sample = original_load(path, **options)
+                references.extend(weakref.ref(value) for value in sample.values()
+                                  if isinstance(value, self.torch.Tensor))
+                calls.append(path)
+                return sample
+
+            with patch("scripts.make_reference_anomalous.torch.load", new=load):
+                self.main([*args, "--reference-count", "1", "--background-count", "1", "--signal-count", "1"])
+            inputs = groups[0] + groups[1]
+            self.assertEqual(calls[:len(inputs)], inputs)
+            self.assertGreater(len(calls), len(inputs))
+            self.assertLess(len(calls), 2 * len(inputs))
+            self.assertTrue(all(reference() is None for reference in references))
 
 
 if __name__ == "__main__":

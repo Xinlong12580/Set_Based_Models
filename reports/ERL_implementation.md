@@ -1,6 +1,6 @@
 ---
 title: "ERL Software Reference and Trigger-Study Configuration"
-date: "11 October 2026"
+date: "22 October 2026"
 lang: en
 papersize: a4
 fontsize: 10pt
@@ -36,7 +36,7 @@ the software's discovery workflow.
 | Reporting tools | Logs, structured JSON reports and acceptance plots |
 
 The principal study entry point is
-`casual_tests/run_ERL_Gini_nested.py`.
+`casual_tests/train_ERL.py`.
 It supports single-object or particle-pair inputs, event-only and combined
 discovery. Final pruning is
 model built-in; physics-specific rate units and assumptions remain external.
@@ -678,19 +678,23 @@ python scripts/make_reference_anomalous.py \
   --signal data/signal_raw.pt \
   --output-dir data/example_mixture
 
-python casual_tests/run_ERL_Gini_nested.py \
+python casual_tests/train_ERL.py \
   --signal data/example_mixture/anomalous.pt \
   --background data/example_mixture/reference.pt \
-  --report reports/ERL_example_combined.txt \
+  --output-prefix training_outputs/ERL_example_combined \
   --object-cut-priority type_id 'pt:>' --require-complete-priority \
   --reference-penalty 10 --stricter-score-improvement 0.01 \
   --max-trigger-rate-khz 40 --input-rate-mhz 40
 
 python scripts/plot_acceptance_report.py \
-  reports/ERL_example_combined.txt \
-  --output reports/ERL_example_combined.png
+  training_outputs/ERL_example_combined.report.json \
+  --output training_outputs/ERL_example_combined.acceptance.png
 ```
 
+- Training saves `.model.json` through the core saver and a separate
+  `.report.json` with training diagnostics. Use `--overwrite-output` to replace
+  existing files. Load the model with `ExistentialRuleList.load()` for inference;
+  the training report is not a model artifact.
 - Add `--object-only` to restrict discovery to objects.
 - For event-only, add `--event-only` and remove object priority.
 - To enable both similarity stages, add

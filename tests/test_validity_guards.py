@@ -1,6 +1,7 @@
 """Automatic validity guards: synthetic arrays only, no production training."""
 
 from dataclasses import replace
+from importlib.util import find_spec
 from pathlib import Path
 import sys
 import unittest
@@ -12,11 +13,11 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from set_based_models import (
-    CategoryCut, EventCut, ExistentialDecisionTree, ExistentialRule, ExistentialRuleList, ObservableSpec,
+    CategoryCut, EventCut, ExistentialRule, ExistentialRuleList, ObservableSpec,
     RuleStatistics, RuleStep, RuleUnion, SetInput, ThresholdCut,
 )
 from set_based_models.core.candidates import event_candidate_cuts
-from set_based_models.decision_tree.objectives import gini_gain
+from set_based_models.core.objectives import gini_gain
 from set_based_models.rule_list.pruning import prune_rule_candidates
 from casual_tests import _quantitative_reporting as reporting
 
@@ -239,7 +240,10 @@ class ValidityGuardTests(unittest.TestCase):
         result = prune_rule_candidates([rule], stricter_score_improvement=0, similarity_filter=False)
         self.assertEqual(result.normalized_cuts[0], (ThresholdCut(0, "<=", 1),))
 
+    @unittest.skipUnless(find_spec("set_based_edt"), "EDT is an optional extension")
     def test_shared_tree_candidate_generation_and_slicing_remain_consistent(self):
+        from set_based_edt import ExistentialDecisionTree
+
         dummy = (ObservableSpec("unused", "continuous"),)
         objects = np.zeros((3, 1, 1))
         mask = np.zeros((3, 1), bool)

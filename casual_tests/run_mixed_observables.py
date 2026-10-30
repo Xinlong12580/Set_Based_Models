@@ -1,7 +1,8 @@
 """Run both models on synthetic data requiring event and slot cuts.
 
 Run from the repository root: python casual_tests/run_mixed_observables.py
-Only NumPy is required; no external dataset is loaded.
+Only NumPy is required; no external dataset is loaded. EDT is demonstrated only
+when the optional extension is installed.
 """
 
 from pathlib import Path
@@ -12,7 +13,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from set_based_models import (
-    ExistentialDecisionTree, ExistentialRuleList, ObservableSpec,
+    ExistentialRuleList, ObservableSpec,
     TPRFPRRuleScore, gini_gain,
 )
 
@@ -32,15 +33,22 @@ def main():
         background_slot_mask=mask,
     )
 
-    tree = ExistentialDecisionTree(
-        observables, event_observables=event_observables,
-        max_depth=2, gain_function=gini_gain,
-    ).fit(signal, background, **fit_args)
-    leaf = int(tree.apply(signal, event_features=signal_events, slot_mask=mask)[0])
-    print("Tree path for signal:")
-    print(tree.cut_chain_text(leaf))
-    performance = tree.evaluate(signal, background, **fit_args)
-    print(f"Tree TPR={performance.true_positive_rate:g}, FPR={performance.false_positive_rate:g}")
+    try:
+        from set_based_edt import ExistentialDecisionTree
+    except ModuleNotFoundError as error:
+        if error.name != "set_based_edt":
+            raise
+        print("Skipping EDT example: optional extension is not installed.")
+    else:
+        tree = ExistentialDecisionTree(
+            observables, event_observables=event_observables,
+            max_depth=2, gain_function=gini_gain,
+        ).fit(signal, background, **fit_args)
+        leaf = int(tree.apply(signal, event_features=signal_events, slot_mask=mask)[0])
+        print("Tree path for signal:")
+        print(tree.cut_chain_text(leaf))
+        performance = tree.evaluate(signal, background, **fit_args)
+        print(f"Tree TPR={performance.true_positive_rate:g}, FPR={performance.false_positive_rate:g}")
 
     model = ExistentialRuleList(
         observables, event_observables=event_observables,

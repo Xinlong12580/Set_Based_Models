@@ -6,7 +6,9 @@ import numpy as np
 import torch
 
 from .features import _abs_delta_phi
-from .objects import OBJECT_COLUMNS, OBJECT_SLOTS, _rank_object_arrays, object_feature_schema
+from .objects import (
+    BTAG_COLUMNS, DZ_COLUMNS, OBJECT_COLUMNS, OBJECT_SLOTS, PROPERTY_COLUMNS, _rank_object_arrays, object_feature_schema,
+)
 
 
 # Original slots are ordered by type, then decreasing PT within each type.
@@ -29,9 +31,15 @@ PAIR_FEATURES = {
     "opposite_eta_hemispheres": ("boolean", "1", "eta_1 and eta_2 have strictly opposite signs"),
 }
 PAIR_COLUMNS = (
-    *(f"{name}_{member}" for member in (1, 2) for name in MEMBER_COLUMNS),
+    # Keep the original 68 pair columns in place; append new member properties.
+    *(f"{name}_{member}" for member in (1, 2) for name in (*PROPERTY_COLUMNS, "eta_valid", "phi_valid")),
     *(column for name in PAIR_FEATURES for column in (name, name + "_valid")),
+    *(f"{name}_{member}" for member in (1, 2) for name in BTAG_COLUMNS),
 )
+# Keep all previous 96 columns fixed, then append member DZ and its difference.
+PAIR_FEATURES["abs_delta_dz"] = ("continuous", "mm", "abs(dz_1 - dz_2); requires two valid signed DZ values")
+PAIR_COLUMNS += (*(f"{name}_{member}" for member in (1, 2) for name in DZ_COLUMNS),
+                 "abs_delta_dz", "abs_delta_dz_valid")
 # GeV; PDG 2025 listings. Jets use their measured, valid stored mass instead.
 LEPTON_MASSES = {"muons": 0.1056583755, "electrons": 0.00051099895}
 
@@ -46,6 +54,8 @@ def pair_feature_schema():
                 entry["validity_column"] += f"_{member}"
             if "value_column" in entry:
                 entry["value_column"] += f"_{member}"
+            if "value_columns" in entry:
+                entry["value_columns"] = [name + f"_{member}" for name in entry["value_columns"]]
             if original["name"] in ("eta", "phi"):
                 entry["validity_column"] = f"{original['name']}_valid_{member}"
             schema.append(entry)
@@ -60,7 +70,8 @@ def pair_feature_schema():
         schema.append({"name": name + "_valid", "kind": "boolean", "units": "1",
                        "value_column": name,
                        "definition": "both members exist and required measurements/result are valid"})
-    return schema
+    by_name = {entry["name"]: entry for entry in schema}
+    return [by_name[name] for name in PAIR_COLUMNS]
 
 
 def _invariant_mass(pt1, pt2, eta1, eta2, delta_phi, mass1, mass2):
@@ -77,13 +88,14 @@ def _invariant_mass(pt1, pt2, eta1, eta2, delta_phi, mass1, mass2):
 
 
 def build_pair_tensor(records):
-    """Return (float32 [N,231,68] pairs, bool [N,231] presence mask).
+    """Return (float32 [N,231,102] pairs, bool [N,231] presence mask).
 
     Pairs use the same capped, ranked objects as obj, but are computed from
     raw float64 values before coordinate zero filling/float32 downcasting.
     Every valid pair contains two distinct objects. Undefined properties are
     zero with a false schema-linked guard. Missing jet mass never becomes a
     massless-jet assumption; electrons/muons use fixed masses and photons zero.
+    abs_delta_dz uses signed electron/muon DZ in mm and requires both guards.
     """
     objects, coordinates = _rank_object_arrays(records)
     source = {name: i for i, name in enumerate(OBJECT_COLUMNS)}
@@ -146,6 +158,8 @@ def build_pair_tensor(records):
         ):
             valid = value(original + "_valid", first).astype(bool) & value(original + "_valid", second).astype(bool)
             store(name, combine(value(original, first), value(original, second)), valid)
+        dz_valid = value("dz_valid", first).astype(bool) & value("dz_valid", second).astype(bool)
+        store("abs_delta_dz", np.abs(value("dz", first) - value("dz", second)), dz_valid)
         charge1, charge2 = value("charge", first), value("charge", second)
         types1, types2 = value("type_id", first), value("type_id", second)
         leptons = [i for i, kind in enumerate(OBJECT_SLOTS) if kind in LEPTON_MASSES]
